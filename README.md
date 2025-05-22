@@ -111,6 +111,67 @@ The beautifier's behavior can be customized using the following name-value pair 
     *   Data Type: `char` (options: `'cell'` or `'char'`)
     *   Default: `'cell'`
 
+*   **`AlignAssignments`**
+    *   Purpose: If `true`, attempts to align the `=` signs in consecutive assignment statements. Blocks of assignments are determined by lines with the same indentation level that are not interrupted by empty lines, comment-only lines, or other code constructs (like control flow keywords).
+    *   Data Type: `logical`
+    *   Default: `false`
+    *   Example:
+        ```matlab
+        % Input:
+        % a=1;
+        % longVarName=2;
+        % b = 3;
+        %
+        % Output with AlignAssignments=true:
+        % a           = 1;
+        % longVarName = 2;
+        % b           = 3;
+        ```
+
+## Configuration File (`.mbeautifyrc`)
+
+The beautifier can be configured using a file named `.mbeautifyrc` located in the current working directory (`pwd`). This allows you to set your preferred default options without specifying them in each function call.
+
+### File Format
+
+*   The file must be named `.mbeautifyrc`.
+*   It's a plain text file.
+*   Each line defines an option using a `key = value` format.
+    *   Example: `IndentSize = 2`
+*   Keys are case-insensitive (e.g., `indentsize` is treated as `IndentSize`).
+*   Values should match the expected type for the option:
+    *   **Numerics:** `IndentSize = 4`, `MinBlankLinesBeforeBlock = 1`
+    *   **Logicals:** `UseTabs = true`, `SpaceAroundOperators = false` (case-insensitive 'true' or 'false')
+    *   **Strings:** `OutputFormat = char`, `StylePreset = CompactStyle`
+*   Lines starting with a hash symbol (`#`) are treated as comments and are ignored.
+*   Blank lines are ignored.
+*   Leading and trailing whitespace around keys and values are trimmed.
+
+### Example `.mbeautifyrc`
+```
+# My preferred MATLAB beautifier settings
+
+IndentSize = 2
+UseTabs = false
+
+SpaceAroundOperators = true
+SpaceAfterComma = true
+
+# StylePreset = CompactStyle
+MinBlankLinesBeforeBlock = 1
+```
+
+### Option Precedence
+
+The beautifier determines the final settings for each option based on the following order of precedence (highest to lowest):
+
+1.  **Direct Arguments:** Options passed directly in the function call (e.g., `code_beautifier(code, 'IndentSize', 8)`). These override all other settings.
+2.  **Style Preset:** Options defined by a `StylePreset` (e.g., `'MathWorksStyle'`, `'CompactStyle'`) if a preset is specified either as a direct argument or in the `.mbeautifyrc` file. If a preset is specified in both, the direct argument preset takes precedence.
+3.  **`.mbeautifyrc` Options:** Options set in the `.mbeautifyrc` file.
+4.  **Built-in Defaults:** The function's hardcoded default values (typically corresponding to the `'Default'` preset).
+
+For instance, if `.mbeautifyrc` sets `IndentSize = 2`, but you call `code_beautifier(code, 'IndentSize', 4)`, the `IndentSize` will be 4. If `.mbeautifyrc` sets `IndentSize = 2` and you call `code_beautifier(code, 'StylePreset', 'MathWorksStyle')` (which defaults `IndentSize` to 4), the `IndentSize` will be 4.
+
 ## Examples
 
 For a quick example of default formatting, consider this input:
