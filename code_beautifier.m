@@ -6,50 +6,160 @@ function beautifulCode = code_beautifier(rawCode, varargin)
 %   using default settings.
 %
 %   Optional Name-Value Pair Arguments:
-%   'IndentSize':               Scalar integer, number of spaces for one indent level. Default: 4.
-%   'UseTabs':                  Logical, true to use tabs for indentation. Default: false.
-%   'SpaceAroundOperators':     Logical, true to add spaces around binary operators. Default: true.
-%   'SpaceAfterComma':          Logical, true to add a space after commas. Default: true.
-%   'ContinuationIndentOffset': Scalar integer, additional indent levels for
-%                               lines continued with '...'. Default: 1.
-%   'PreserveBlankLines':       Logical, true to keep single blank lines, collapse multiple.
-%                               false to remove most blank lines. Default: true.
-%   'MinBlankLinesBeforeBlock': Scalar integer (0-2), ensures N blank lines
-%                               before major block keywords (0 to disable). Max 2. Default: 0.
-%   'RemoveRedundantSemicolons':Logical, true to remove ';;' or 'end;'. Default: true.
+%   'StylePreset':              String, applies a predefined set of styling options.
+%                               Available presets:
+%                                 'Default': Standard balanced style (default if no preset specified).
+%                                 'MathWorksStyle': Emulates common MathWorks editor defaults
+%                                                   with added spacing before blocks.
+%                                 'CompactStyle': Prioritizes less vertical space with smaller indents
+%                                                 and fewer blank lines.
+%                               Individual options specified in the function call will override
+%                               those set by the 'StylePreset'. Default: ''.
+%   'IndentSize':               Scalar integer, number of spaces for one indent level.
+%                               (e.g., from 'Default' preset: 4).
+%   'UseTabs':                  Logical, true to use tabs for indentation.
+%                               (e.g., from 'Default' preset: false).
+%   'SpaceAroundOperators':     Logical, true to add spaces around binary operators.
+%                               (e.g., from 'Default' preset: true).
+%   'SpaceAfterComma':          Logical, true to add a space after commas.
+%                               (e.g., from 'Default' preset: true).
+%   'ContinuationIndentOffset': Scalar integer, additional indent levels for lines continued
+%                               with '...'. (e.g., from 'Default' preset: 1).
+%   'PreserveBlankLines':       Logical, true to keep single blank lines, collapse multiple;
+%                               false to remove most blank lines.
+%                               (e.g., from 'Default' preset: true).
+%   'MinBlankLinesBeforeBlock': Scalar integer (0-2), ensures N blank lines before major
+%                               block keywords (0 to disable). Max 2.
+%                               (e.g., from 'Default' preset: 0).
+%   'RemoveRedundantSemicolons':Logical, true to remove ';;' or 'end;'.
+%                               (e.g., from 'Default' preset: true).
 %   'AddSemicolonsToStatements':Logical, true to add semicolons to non-assignment
-%                               function calls/expressions. Default: false (use with caution).
+%                               function calls/expressions. (Use with caution).
+%                               (e.g., from 'Default' preset: false).
 %   'OutputFormat':             String, 'cell' (default) or 'char'. Defines output type.
 %
 % Example:
 %   code = {'function y=myfunc(x);if x > 0;;y=x*2+1;else;y=0;end;disp(y);end;'};
+%   % Using specific options:
 %   prettyCell = code_beautifier(code, 'RemoveRedundantSemicolons', true, 'AddSemicolonsToStatements', true);
 %   disp(strjoin(prettyCell, sprintf('\n')));
 %
+%   % Apply a preset:
+%   compactCode = code_beautifier(code, 'StylePreset', 'CompactStyle');
+%   disp(strjoin(compactCode, sprintf('\n')));
+%
+%   % Apply a preset and override one option:
+%   customCompactCode = code_beautifier(code, 'StylePreset', 'CompactStyle', 'IndentSize', 4);
+%   disp(strjoin(customCompactCode, sprintf('\n')));
+%
 %   filePath = 'myScript.m'; % Path to an existing .m file
 %   rawText = fileread(filePath);
-%   formattedText = code_beautifier(rawText, 'OutputFormat', 'char');
+%   formattedText = code_beautifier(rawText, 'OutputFormat', 'char', 'StylePreset', 'MathWorksStyle');
 %   % To save back (BE CAREFUL - BACKUP YOUR ORIGINAL):
 %   % fidOut = fopen('myScript_beautified.m', 'w');
 %   % fprintf(fidOut, '%s', formattedText); % Note: no \n needed if formattedText has them
 %   % fclose(fidOut);
 
-    % --- Input Parsing ---
+    % --- Style Presets Definition ---
+    stylePresets = struct();
+    stylePresets.Default = struct(...
+        'IndentSize', 4, ...
+        'UseTabs', false, ...
+        'SpaceAroundOperators', true, ...
+        'SpaceAfterComma', true, ...
+        'ContinuationIndentOffset', 1, ...
+        'PreserveBlankLines', true, ...
+        'MinBlankLinesBeforeBlock', 0, ...
+        'RemoveRedundantSemicolons', true, ...
+        'AddSemicolonsToStatements', false ...
+    );
+    stylePresets.MathWorksStyle = struct(...
+        'IndentSize', 4, ...
+        'UseTabs', false, ...
+        'SpaceAroundOperators', true, ...
+        'SpaceAfterComma', true, ...
+        'ContinuationIndentOffset', 1, ...
+        'PreserveBlankLines', true, ...
+        'MinBlankLinesBeforeBlock', 1, ...
+        'RemoveRedundantSemicolons', true, ...
+        'AddSemicolonsToStatements', false ...
+    );
+    stylePresets.CompactStyle = struct(...
+        'IndentSize', 2, ...
+        'UseTabs', false, ...
+        'SpaceAroundOperators', true, ...
+        'SpaceAfterComma', true, ...
+        'ContinuationIndentOffset', 1, ...
+        'PreserveBlankLines', false, ...
+        'MinBlankLinesBeforeBlock', 0, ...
+        'RemoveRedundantSemicolons', true, ...
+        'AddSemicolonsToStatements', false ...
+    );
+
+    % --- Input Parsing Setup ---
     p = inputParser;
     addRequired(p, 'rawCode', @(x) ischar(x) || iscellstr(x) || isstring(x));
-    addParameter(p, 'IndentSize', 4, @(x) isnumeric(x) && isscalar(x) && x >= 0 && floor(x) == x); % Allow 0 for no auto-indent
-    addParameter(p, 'UseTabs', false, @(x) islogical(x) && isscalar(x));
-    addParameter(p, 'SpaceAroundOperators', true, @(x) islogical(x) && isscalar(x));
-    addParameter(p, 'SpaceAfterComma', true, @(x) islogical(x) && isscalar(x));
-    addParameter(p, 'ContinuationIndentOffset', 1, @(x) isnumeric(x) && isscalar(x) && x >= 0 && floor(x) == x);
-    addParameter(p, 'PreserveBlankLines', true, @(x) islogical(x) && isscalar(x));
-    addParameter(p, 'MinBlankLinesBeforeBlock', 0, @(x) isnumeric(x) && isscalar(x) && x >= 0 && x <=2 && floor(x) == x);
-    addParameter(p, 'RemoveRedundantSemicolons', true, @(x) islogical(x) && isscalar(x));
-    addParameter(p, 'AddSemicolonsToStatements', false, @(x) islogical(x) && isscalar(x));
-    addParameter(p, 'OutputFormat', 'cell', @(x) ischar(x) && ismember(lower(x), {'cell', 'char'}));
+    addParameter(p, 'StylePreset', '', @(x) ischar(x) || isstring(x)); % Accept char or string for preset name
+    addParameter(p, 'IndentSize', stylePresets.Default.IndentSize, @(x) isnumeric(x) && isscalar(x) && x >= 0 && floor(x) == x);
+    addParameter(p, 'UseTabs', stylePresets.Default.UseTabs, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'SpaceAroundOperators', stylePresets.Default.SpaceAroundOperators, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'SpaceAfterComma', stylePresets.Default.SpaceAfterComma, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'ContinuationIndentOffset', stylePresets.Default.ContinuationIndentOffset, @(x) isnumeric(x) && isscalar(x) && x >= 0 && floor(x) == x);
+    addParameter(p, 'PreserveBlankLines', stylePresets.Default.PreserveBlankLines, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'MinBlankLinesBeforeBlock', stylePresets.Default.MinBlankLinesBeforeBlock, @(x) isnumeric(x) && isscalar(x) && x >= 0 && x <=2 && floor(x) == x);
+    addParameter(p, 'RemoveRedundantSemicolons', stylePresets.Default.RemoveRedundantSemicolons, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'AddSemicolonsToStatements', stylePresets.Default.AddSemicolonsToStatements, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'OutputFormat', 'cell', @(x) (ischar(x) || (isstring(x) && isscalar(x))) && ismember(lower(char(x)), {'cell', 'char'}));
 
-    parse(p, rawCode, varargin{:});
+    % --- Preset Application Logic ---
+    % First, parse just to find the StylePreset if provided
+    tempP = inputParser;
+    addParameter(tempP, 'StylePreset', '', @(x) ischar(x) || isstring(x));
+    parse(tempP, varargin{:}); % Only parse varargin for StylePreset
+    providedPresetName = char(tempP.Results.StylePreset); % Ensure it's char
+
+    presetVarargin = {};
+    if ~isempty(providedPresetName)
+        if strcmpi(providedPresetName, 'Default') % Handle 'Default' explicitly
+            presetSettings = stylePresets.Default;
+        elseif strcmpi(providedPresetName, 'MathWorksStyle')
+            presetSettings = stylePresets.MathWorksStyle;
+        elseif strcmpi(providedPresetName, 'CompactStyle')
+            presetSettings = stylePresets.CompactStyle;
+        else
+            % If an invalid preset name is given, it will be caught by the main parser later
+            % if we add validation for StylePreset there. For now, we just don't apply a preset.
+            % Or, we could error here: error('code_beautifier:InvalidStylePreset', 'Unknown StylePreset: %s', providedPresetName);
+            presetSettings = struct(); % Empty struct, no settings
+        end
+        
+        if ~isempty(fieldnames(presetSettings))
+            presetFields = fieldnames(presetSettings);
+            presetVarargin = cell(1, length(presetFields) * 2);
+            for k = 1:length(presetFields)
+                presetVarargin{2*k-1} = presetFields{k};
+                presetVarargin{2*k} = presetSettings.(presetFields{k});
+            end
+        end
+    end
+    
+    % Combine preset options (which go first) with user-provided varargin (which can override)
+    combinedVarargin = [presetVarargin, varargin];
+
+    % Now parse with the combined arguments
+    parse(p, rawCode, combinedVarargin{:});
     options = p.Results;
+    
+    % If StylePreset was specified, but it was an unknown one, options.StylePreset will hold it.
+    % We might want to add validatestring to the main parser's StylePreset definition
+    % to formally reject unknown presets.
+    % For now, if StylePreset in options is not empty and not one of the known ones,
+    % it means an invalid one was passed and no preset settings were applied for it.
+    % We could add a warning or error here if desired.
+    % Example: if ~isempty(options.StylePreset) && ~isfield(stylePresets, options.StylePreset)
+    %    warning('code_beautifier:UnknownStylePreset', 'Unknown StylePreset "%s" was specified and ignored.', options.StylePreset);
+    % end
+
 
     if options.UseTabs
         indentChar = sprintf('\t'); % Use sprintf for tab character
