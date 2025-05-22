@@ -1,0 +1,161 @@
+# `code_beautifier.m` - MATLAB Code Formatter
+
+## Introduction
+
+`code_beautifier.m` is a MATLAB script designed to automatically format and beautify MATLAB `.m` files or code snippets. Its goal is to provide "one-click" beautification using a set of sensible default formatting rules, while also offering a range of options for customization to suit individual preferences or coding standards.
+
+## Features
+
+*   **Configurable Indentation:** Use spaces or tabs, with adjustable indent size.
+*   **Operator Spacing:** Automatically add spaces around binary operators (e.g., `a + b` instead of `a+b`).
+*   **Comma Spacing:** Ensure consistent spacing after commas.
+*   **Line Continuation Indentation:** Control additional indentation for continued lines.
+*   **Semicolon Management:**
+    *   Remove redundant semicolons (e.g., `a=1;;` becomes `a=1;`).
+    *   Optionally add semicolons to statements that would otherwise produce output (experimental).
+*   **Blank Line Control:**
+    *   Preserve or remove blank lines.
+    *   Ensure a minimum number of blank lines before major block keywords.
+*   **Comment Handling:** Generally preserves comments and their relative indentation, including robust handling of `%` characters within string literals.
+*   **Structural Formatting:** Standardizes indentation for control flow blocks (`if`, `for`, `while`, `switch`, etc.).
+
+## Requirements
+
+*   **MATLAB Version:** Tested on MATLAB R2021a and later. String literals with double quotes (`"`) for comments require R2017a or newer for full comment-parsing fidelity due to the introduction of the `string` data type and its handling of double quotes. Basic functionality should work on older versions, but thorough testing on versions prior to R2017a has not been performed.
+*   **Dependencies:** Single-file script with no external toolbox dependencies.
+
+## How to Use
+
+### Basic Usage
+
+```matlab
+beautifulCode = code_beautifier(rawCode);
+
+% Example with a file:
+% rawText = fileread('myScript.m');
+% formattedText = code_beautifier(rawText, 'OutputFormat', 'char');
+% disp(formattedText);
+
+% % To save back (BE CAREFUL - BACKUP YOUR ORIGINAL):
+% % fidOut = fopen('myScript_beautified.m', 'w');
+% % fprintf(fidOut, '%s', formattedText);
+% % fclose(fidOut);
+```
+
+### Input `rawCode`
+
+The `rawCode` input can be:
+*   A **character array** (a single string containing the entire code, possibly with newline characters `\n`).
+*   A **cell array of strings**, where each cell contains one line of code.
+*   A **string array** (from R2016b+), where each element contains one line of code or the entire code as a scalar string.
+
+### Output `beautifulCode`
+
+The format of `beautifulCode` depends on the `OutputFormat` option:
+*   If `'cell'` (default): Output is a cell array of strings, each cell representing a formatted line.
+*   If `'char'`: Output is a single character array (string) with lines separated by newline characters (`\n`).
+
+### Options (Name-Value Pairs)
+
+The beautifier's behavior can be customized using the following name-value pair arguments:
+
+*   **`IndentSize`**
+    *   Purpose: Specifies the number of spaces to use for one indentation level.
+    *   Data Type: `scalar integer`
+    *   Default: `4`
+    *   Example: `code_beautifier(code, 'IndentSize', 2)`
+
+*   **`UseTabs`**
+    *   Purpose: If `true`, tabs are used for indentation instead of spaces. `IndentSize` will then correspond to the number of tab characters per level.
+    *   Data Type: `logical`
+    *   Default: `false`
+
+*   **`SpaceAroundOperators`**
+    *   Purpose: If `true`, adds spaces around binary operators (e.g., `+`, `-`, `*`, `/`, `==`, `&&`).
+    *   Data Type: `logical`
+    *   Default: `true`
+
+*   **`SpaceAfterComma`**
+    *   Purpose: If `true`, adds a space after commas.
+    *   Data Type: `logical`
+    *   Default: `true`
+
+*   **`ContinuationIndentOffset`**
+    *   Purpose: Specifies the number of *additional* indent levels for lines continued with `...`. For example, if `IndentSize` is 4 and `ContinuationIndentOffset` is 1, continued lines will be indented by an extra 4 spaces relative to the primary indent of the statement.
+    *   Data Type: `scalar integer`
+    *   Default: `1`
+
+*   **`PreserveBlankLines`**
+    *   Purpose: If `true`, single blank lines in the input code are preserved, and multiple consecutive blank lines are collapsed into one. If `false`, most blank lines are removed (except potentially those enforced by `MinBlankLinesBeforeBlock`).
+    *   Data Type: `logical`
+    *   Default: `true`
+
+*   **`MinBlankLinesBeforeBlock`**
+    *   Purpose: Ensures a minimum number of blank lines (0, 1, or 2) before major block-starting keywords (e.g., `if`, `for`, `function`). This can help visually separate code blocks. Set to 0 to disable. This option will not add blank lines at the very beginning of the file.
+    *   Data Type: `scalar integer` (0, 1, or 2)
+    *   Default: `0`
+
+*   **`RemoveRedundantSemicolons`**
+    *   Purpose: If `true`, removes extraneous semicolons (e.g., `;;` becomes `;`, `end;` becomes `end` unless the semicolon is syntactically required or conventional, like for anonymous functions ending with `end);`).
+    *   Data Type: `logical`
+    *   Default: `true`
+
+*   **`AddSemicolonsToStatements`**
+    *   Purpose: If `true`, attempts to add semicolons to lines that are likely statements or expressions whose output would normally be displayed in the command window (e.g., function calls like `disp('Hello')`, unassigned calculations like `a+b`).
+    *   Data Type: `logical`
+    *   Default: `false`
+    *   **Note:** This option is experimental and should be used with caution. It alters program behavior by suppressing output. While it tries to be intelligent (e.g., not adding semicolons to single variable names on a line meant for display, or to keyword lines), it's based on heuristics. **Always review changes made when this option is enabled.**
+
+*   **`OutputFormat`**
+    *   Purpose: Defines the data type of the returned `beautifulCode`.
+    *   Data Type: `char` (options: `'cell'` or `'char'`)
+    *   Default: `'cell'`
+
+## Examples
+
+For a quick example of default formatting, consider this input:
+```matlab
+rawCode = {'function y=myfunc(x);if x > 0;;y=x*2+1;else;y=0;end;disp(y);end;'};
+```
+
+Applying `beautifulCode = code_beautifier(rawCode);` would result in (displayed from cell array):
+```matlab
+function y = myfunc(x)
+    if x > 0;
+        y = x * 2 + 1;
+    else
+        y = 0;
+    end
+    disp(y);
+end
+```
+(Note: Semicolon after `if x > 0` might be added or removed based on specific semicolon options and MATLAB version context; example shows typical output suppression behavior.)
+
+Further examples can be found in the main help text of the `code_beautifier.m` function itself.
+
+## Known Limitations / Important Notes
+
+*   The beautifier is based on regular expressions and heuristics, not a full MATLAB parser. It may not perfectly format all code, especially highly complex, heavily nested, or unusually styled syntax.
+*   It's **highly recommended to use version control** (like Git) and review the changes made by the beautifier, especially when applying it to critical code or legacy projects.
+*   The `AddSemicolonsToStatements` option is experimental and can significantly alter script output behavior by suppressing it. Use with caution and review its effects thoroughly.
+*   Formatting of comments within code lines, especially complex trailing comments, aims for preservation but might have edge cases.
+
+## Testing
+
+A suite of unit tests (`test_code_beautifier.m`) is available to verify the formatter's behavior across various options and scenarios. Users can run these tests using MATLAB's unit testing framework to ensure the script functions as expected in their environment.
+
+To run the tests:
+```matlab
+% Navigate to the directory containing test_code_beautifier.m
+% Then run:
+% results = runtests('test_code_beautifier');
+% disp(results);
+```
+
+## License
+
+This project is currently provided without a formal license. Users are free to use and modify the code at their own risk. Consider adding a standard open-source license like MIT or Apache 2.0 if distributing further.
+
+## Contributing
+
+Contributions, bug reports, and suggestions are welcome! Please feel free to open an issue or submit a pull request on the repository (if this script is part of a version-controlled project). For local modifications, consider sharing improvements with colleagues or the community if appropriate.
