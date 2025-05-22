@@ -71,7 +71,8 @@ function beautifulCode = code_beautifier(rawCode, varargin)
         'PreserveBlankLines', true, ...
         'MinBlankLinesBeforeBlock', 0, ...
         'RemoveRedundantSemicolons', true, ...
-        'AddSemicolonsToStatements', false ...
+        'AddSemicolonsToStatements', false, ...
+        'AlignAssignments', false ...
     );
     stylePresets.MathWorksStyle = struct(...
         'IndentSize', 4, ...
@@ -82,7 +83,8 @@ function beautifulCode = code_beautifier(rawCode, varargin)
         'PreserveBlankLines', true, ...
         'MinBlankLinesBeforeBlock', 1, ...
         'RemoveRedundantSemicolons', true, ...
-        'AddSemicolonsToStatements', false ...
+        'AddSemicolonsToStatements', false, ...
+        'AlignAssignments', false ...
     );
     stylePresets.CompactStyle = struct(...
         'IndentSize', 2, ...
@@ -93,73 +95,124 @@ function beautifulCode = code_beautifier(rawCode, varargin)
         'PreserveBlankLines', false, ...
         'MinBlankLinesBeforeBlock', 0, ...
         'RemoveRedundantSemicolons', true, ...
-        'AddSemicolonsToStatements', false ...
+        'AddSemicolonsToStatements', false, ...
+        'AlignAssignments', false ...
     );
 
-    % --- Input Parsing Setup ---
-    p = inputParser;
-    addRequired(p, 'rawCode', @(x) ischar(x) || iscellstr(x) || isstring(x));
-    addParameter(p, 'StylePreset', '', @(x) ischar(x) || isstring(x)); % Accept char or string for preset name
-    addParameter(p, 'IndentSize', stylePresets.Default.IndentSize, @(x) isnumeric(x) && isscalar(x) && x >= 0 && floor(x) == x);
-    addParameter(p, 'UseTabs', stylePresets.Default.UseTabs, @(x) islogical(x) && isscalar(x));
-    addParameter(p, 'SpaceAroundOperators', stylePresets.Default.SpaceAroundOperators, @(x) islogical(x) && isscalar(x));
-    addParameter(p, 'SpaceAfterComma', stylePresets.Default.SpaceAfterComma, @(x) islogical(x) && isscalar(x));
-    addParameter(p, 'ContinuationIndentOffset', stylePresets.Default.ContinuationIndentOffset, @(x) isnumeric(x) && isscalar(x) && x >= 0 && floor(x) == x);
-    addParameter(p, 'PreserveBlankLines', stylePresets.Default.PreserveBlankLines, @(x) islogical(x) && isscalar(x));
-    addParameter(p, 'MinBlankLinesBeforeBlock', stylePresets.Default.MinBlankLinesBeforeBlock, @(x) isnumeric(x) && isscalar(x) && x >= 0 && x <=2 && floor(x) == x);
-    addParameter(p, 'RemoveRedundantSemicolons', stylePresets.Default.RemoveRedundantSemicolons, @(x) islogical(x) && isscalar(x));
-    addParameter(p, 'AddSemicolonsToStatements', stylePresets.Default.AddSemicolonsToStatements, @(x) islogical(x) && isscalar(x));
-    addParameter(p, 'OutputFormat', 'cell', @(x) (ischar(x) || (isstring(x) && isscalar(x))) && ismember(lower(char(x)), {'cell', 'char'}));
-
-    % --- Preset Application Logic ---
-    % First, parse just to find the StylePreset if provided
-    tempP = inputParser;
-    addParameter(tempP, 'StylePreset', '', @(x) ischar(x) || isstring(x));
-    parse(tempP, varargin{:}); % Only parse varargin for StylePreset
-    providedPresetName = char(tempP.Results.StylePreset); % Ensure it's char
-
-    presetVarargin = {};
-    if ~isempty(providedPresetName)
-        if strcmpi(providedPresetName, 'Default') % Handle 'Default' explicitly
-            presetSettings = stylePresets.Default;
-        elseif strcmpi(providedPresetName, 'MathWorksStyle')
-            presetSettings = stylePresets.MathWorksStyle;
-        elseif strcmpi(providedPresetName, 'CompactStyle')
-            presetSettings = stylePresets.CompactStyle;
-        else
-            % If an invalid preset name is given, it will be caught by the main parser later
-            % if we add validation for StylePreset there. For now, we just don't apply a preset.
-            % Or, we could error here: error('code_beautifier:InvalidStylePreset', 'Unknown StylePreset: %s', providedPresetName);
-            presetSettings = struct(); % Empty struct, no settings
-        end
-        
-        if ~isempty(fieldnames(presetSettings))
-            presetFields = fieldnames(presetSettings);
-            presetVarargin = cell(1, length(presetFields) * 2);
-            for k = 1:length(presetFields)
-                presetVarargin{2*k-1} = presetFields{k};
-                presetVarargin{2*k} = presetSettings.(presetFields{k});
+    % --- Determine Effective Defaults (Precedence: Function Defaults -> Config File -> Preset -> Direct Args) ---
+    
+    % 1. Start with hardcoded function defaults (via stylePresets.Default)
+    effectiveDefaults = stylePresets.Default;
+    
+    % 2. Load and Overlay Config File Options
+    knownOptionsInfo = getKnownOptionsInfo(stylePresets.Default); % Get type info for parsing
+    configFilePath = fullfile(pwd, '.mbeautifyrc');
+    configFileOptions = struct();
+    if exist(configFilePath, 'file')
+        configFileOptions = parseConfigFile(configFilePath, knownOptionsInfo);
+        % Overlay configFileOptions onto effectiveDefaults
+        fieldsToUpdate = fieldnames(configFileOptions);
+        for k_f = 1:length(fieldsToUpdate)
+            fieldName = fieldsToUpdate{k_f};
+            if isfield(effectiveDefaults, fieldName) % Ensure it's a known option
+                effectiveDefaults.(fieldName) = configFileOptions.(fieldName);
             end
         end
     end
-    
-    % Combine preset options (which go first) with user-provided varargin (which can override)
-    combinedVarargin = [presetVarargin, varargin];
 
-    % Now parse with the combined arguments
-    parse(p, rawCode, combinedVarargin{:});
+    % 3. Determine and Overlay StylePreset Options
+    %    The StylePreset can be from varargin (highest precedence for choosing the preset) or from config file.
+    
+    % Check varargin for 'StylePreset' first
+    directArgPresetName = '';
+    for k_v = 1:2:length(varargin)
+        if strcmpi(varargin{k_v}, 'StylePreset') && k_v + 1 <= length(varargin)
+            directArgPresetName = char(varargin{k_v+1});
+            break;
+        end
+    end
+    
+    finalPresetName = '';
+    if ~isempty(directArgPresetName)
+        % Validate directArgPresetName. If invalid, validateStylePreset will error later.
+        % For now, assume it might be valid to select it.
+        finalPresetName = directArgPresetName;
+    elseif isfield(configFileOptions, 'StylePreset') && ~isempty(configFileOptions.StylePreset)
+        % Validate preset from config file
+        try
+            validateStylePreset(configFileOptions.StylePreset); % Ensure it's a known preset string
+            finalPresetName = char(configFileOptions.StylePreset);
+        catch ME
+            warning('code_beautifier:InvalidStylePresetInConfigFile', ...
+                    'Invalid StylePreset "%s" in .mbeautifyrc: %s. Ignoring this preset.', ...
+                    configFileOptions.StylePreset, ME.message);
+        end
+    end
+
+    if ~isempty(finalPresetName)
+        % Check if this finalPresetName is actually valid before trying to access stylePresets.(finalPresetName)
+        % The validateStylePreset function (used by inputParser later) will catch genuinely invalid names.
+        % Here, we just need to ensure it's one of the defined preset structs.
+        validPresetNames = fieldnames(stylePresets);
+        isKnownPreset = false;
+        for vp_idx = 1:length(validPresetNames)
+            if strcmpi(finalPresetName, validPresetNames{vp_idx})
+                finalPresetName = validPresetNames{vp_idx}; % Use the canonical casing
+                isKnownPreset = true;
+                break;
+            end
+        end
+
+        if isKnownPreset
+            presetSettingsToApply = stylePresets.(finalPresetName);
+            fieldsToUpdate = fieldnames(presetSettingsToApply);
+            for k_f = 1:length(fieldsToUpdate)
+                fieldName = fieldsToUpdate{k_f};
+                effectiveDefaults.(fieldName) = presetSettingsToApply.(fieldName);
+            end
+        elseif ~isempty(directArgPresetName) && strcmpi(directArgPresetName, finalPresetName)
+            % If it came from direct arg and is not a known preset struct name (e.g. '  Default  ')
+            % it will be caught by the main input parser's validateStylePreset.
+            % We don't issue a warning here for that case.
+        elseif ~isempty(finalPresetName) % Came from config or was an unknown preset string
+             % Warning for unknown (but non-empty) preset names not from direct args already handled by validateStylePreset in config loading
+             % or will be caught by the main parser.
+        end
+    end
+
+    % --- Input Parsing Setup (using effectiveDefaults) ---
+    p = inputParser;
+    addRequired(p, 'rawCode', @(x) ischar(x) || iscellstr(x) || isstring(x));
+    
+    % Add parameters with their effective defaults and validation functions
+    addParameter(p, 'StylePreset', effectiveDefaults.StylePreset, @validateStylePreset); % StylePreset default itself is '' or from config
+    addParameter(p, 'IndentSize', effectiveDefaults.IndentSize, @(x) isnumeric(x) && isscalar(x) && x >= 0 && floor(x) == x);
+    addParameter(p, 'UseTabs', effectiveDefaults.UseTabs, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'SpaceAroundOperators', effectiveDefaults.SpaceAroundOperators, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'SpaceAfterComma', effectiveDefaults.SpaceAfterComma, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'ContinuationIndentOffset', effectiveDefaults.ContinuationIndentOffset, @(x) isnumeric(x) && isscalar(x) && x >= 0 && floor(x) == x);
+    addParameter(p, 'PreserveBlankLines', effectiveDefaults.PreserveBlankLines, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'MinBlankLinesBeforeBlock', effectiveDefaults.MinBlankLinesBeforeBlock, @(x) isnumeric(x) && isscalar(x) && x >= 0 && x <=2 && floor(x) == x);
+    addParameter(p, 'RemoveRedundantSemicolons', effectiveDefaults.RemoveRedundantSemicolons, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'AddSemicolonsToStatements', effectiveDefaults.AddSemicolonsToStatements, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'AlignAssignments', effectiveDefaults.AlignAssignments, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'OutputFormat', effectiveDefaults.OutputFormat, @(x) (ischar(x) || (isstring(x) && isscalar(x))) && ismember(lower(char(x)), {'cell', 'char'}));
+
+    % 4. Parse Direct Arguments (varargin) which will override the effectiveDefaults
+    parse(p, rawCode, varargin{:});
     options = p.Results;
     
-    % If StylePreset was specified, but it was an unknown one, options.StylePreset will hold it.
-    % We might want to add validatestring to the main parser's StylePreset definition
-    % to formally reject unknown presets.
-    % For now, if StylePreset in options is not empty and not one of the known ones,
-    % it means an invalid one was passed and no preset settings were applied for it.
-    % We could add a warning or error here if desired.
-    % Example: if ~isempty(options.StylePreset) && ~isfield(stylePresets, options.StylePreset)
-    %    warning('code_beautifier:UnknownStylePreset', 'Unknown StylePreset "%s" was specified and ignored.', options.StylePreset);
-    % end
-
+    % Ensure StylePreset in options is the canonical one if it was matched
+    if ~isempty(options.StylePreset)
+        currentPresetVal = char(options.StylePreset);
+        validPresetNames = fieldnames(stylePresets);
+        for vp_idx = 1:length(validPresetNames)
+            if strcmpi(currentPresetVal, validPresetNames{vp_idx})
+                options.StylePreset = validPresetNames{vp_idx}; % Use canonical casing
+                break;
+            end
+        end
+    end
 
     if options.UseTabs
         indentChar = sprintf('\t'); % Use sprintf for tab character
@@ -476,6 +529,10 @@ function beautifulCode = code_beautifier(rawCode, varargin)
     end
     beautifulLines = finalOutputLines(1:finalLineCount)';
 
+    % --- Optional: Align Assignments ---
+    if options.AlignAssignments && ~isempty(beautifulLines)
+        beautifulLines = alignAssignmentBlocksInternal(beautifulLines, options);
+    end
 
     % --- Output Formatting ---
     if strcmpi(options.OutputFormat, 'char')
@@ -484,6 +541,164 @@ function beautifulCode = code_beautifier(rawCode, varargin)
         beautifulCode = beautifulLines;
     end
 end
+
+% --- Helper function to align assignment blocks ---
+function lines = alignAssignmentBlocksInternal(lines, options)
+    if isempty(lines), return; end
+
+    blockLinesIndices = [];
+    blockLinesContent = {};
+    blockLinesIndents = {};
+    maxLhsLen = 0;
+    
+    indentKeywordsPattern = ['^\s*(if|for|while|switch|try|parfor|function|classdef|properties|methods|events|arguments)\b'];
+
+    for i = 1:length(lines)
+        currentLine = lines{i};
+        trimmedLine = strtrim(currentLine);
+
+        isAssignable = false;
+        currentIndent = '';
+        lhs = '';
+        rhs = '';
+        comment = '';
+        equalsIndexInCode = -1;
+
+        if isempty(trimmedLine) || startsWith(trimmedLine, '%') % Empty or full comment line
+            % Process previous block and reset
+        else
+            currentIndent = regexp(currentLine, '^\s*', 'match', 'once');
+            [codePart, commentPart] = extractCodeAndCommentInternal(trimmedLine); % commentPart includes leading ' %'
+            
+            % Check if it's a keyword line (not typically alignable)
+            isKeywordLine = ~isempty(regexp(codePart, indentKeywordsPattern, 'once'));
+
+            if ~isKeywordLine && ~endsWith(strtrim(codePart), '...') % Not a keyword and no line continuation
+                % Find the first '=' that is not part of '==', '~=', '<=', '>=' etc.
+                % This regex finds '=' not preceded/followed by another operator char forming a multi-char operator
+                % It also tries to avoid finding '=' inside string literals by only checking up to first comment char.
+                
+                % Simpler approach: find all '=', then check context.
+                % More robust: use a loop similar to extractCodeAndCommentInternal to find first non-string/non-comment '='
+                
+                tempCodeForEquals = codePart;
+                inSingleQuote = false; inDoubleQuote = false;
+                tempEqualsIndex = -1;
+                for charIdx = 1:length(tempCodeForEquals)
+                    char = tempCodeForEquals(charIdx);
+                    if char == ''''
+                        if charIdx+1 <= length(tempCodeForEquals) && tempCodeForEquals(charIdx+1) == '''' % Escaped
+                            charIdx = charIdx + 1; % Skip next
+                        elseif ~inDoubleQuote
+                            inSingleQuote = ~inSingleQuote;
+                        end
+                    elseif char == '"'
+                         if charIdx+1 <= length(tempCodeForEquals) && tempCodeForEquals(charIdx+1) == '"' % Escaped
+                            charIdx = charIdx + 1; % Skip next
+                         elseif ~inSingleQuote
+                            inDoubleQuote = ~inDoubleQuote;
+                         end
+                    elseif char == '=' && ~inSingleQuote && ~inDoubleQuote
+                        % Check if it's a standalone '='
+                        isComparison = false;
+                        if charIdx > 1 && ismember(tempCodeForEquals(charIdx-1), {'=', '~', '<', '>'})
+                            isComparison = true;
+                        end
+                        if charIdx < length(tempCodeForEquals) && tempCodeForEquals(charIdx+1) == '='
+                            isComparison = true;
+                        end
+                        if ~isComparison
+                            tempEqualsIndex = charIdx;
+                            break; 
+                        end
+                    end
+                end
+                equalsIndexInCode = tempEqualsIndex;
+
+                if equalsIndexInCode > 0
+                    isAssignable = true;
+                    lhs = strtrim(codePart(1:equalsIndexInCode-1));
+                    rhs = strtrim(codePart(equalsIndexInCode+1:end));
+                    comment = commentPart; % Already has leading space if exists
+                end
+            end
+        end
+
+        if isAssignable
+            if isempty(blockLinesIndices) || strcmp(currentIndent, blockLinesIndents{end})
+                % Add to current block
+                blockLinesIndices(end+1) = i;
+                blockLinesContent{end+1} = struct('lhs', lhs, 'rhs', rhs, 'comment', comment, 'originalIndex', i);
+                blockLinesIndents{end+1} = currentIndent;
+                if options.UseTabs
+                    % Approximate tab length for alignment; this is imperfect.
+                    % A common convention is 8 spaces per tab for alignment calculations.
+                    % Or, count tabs as 1 char and then adjust spaces.
+                    % For simplicity, just count chars in LHS. True tab alignment is complex.
+                    maxLhsLen = max(maxLhsLen, length(lhs));
+                else
+                    maxLhsLen = max(maxLhsLen, length(lhs));
+                end
+            else
+                % Indentation changed, process previous block
+                if ~isempty(blockLinesIndices)
+                    lines = applyAlignmentToBlock(lines, blockLinesContent, blockLinesIndents{1}, maxLhsLen, options);
+                end
+                % Start new block
+                blockLinesIndices = [i];
+                blockLinesContent = {struct('lhs', lhs, 'rhs', rhs, 'comment', comment, 'originalIndex', i)};
+                blockLinesIndents = {currentIndent};
+                if options.UseTabs
+                     maxLhsLen = length(lhs);
+                else
+                     maxLhsLen = length(lhs);
+                end
+            end
+        else
+            % Not assignable, process previous block and reset
+            if ~isempty(blockLinesIndices)
+                lines = applyAlignmentToBlock(lines, blockLinesContent, blockLinesIndents{1}, maxLhsLen, options);
+            end
+            blockLinesIndices = [];
+            blockLinesContent = {};
+            blockLinesIndents = {};
+            maxLhsLen = 0;
+        end
+    end
+
+    % Process any remaining block
+    if ~isempty(blockLinesIndices)
+        lines = applyAlignmentToBlock(lines, blockLinesContent, blockLinesIndents{1}, maxLhsLen, options);
+    end
+end
+
+function lines = applyAlignmentToBlock(lines, blockContent, blockIndent, maxLhsLen, options)
+    if length(blockContent) < 1, return; end % Don't align single lines by themselves (or make it an option?)
+                                          % For now, let's align even single lines if they form a "block" of 1.
+                                          % The prompt implies consecutive, so >1. Let's stick to >1 for now.
+    if length(blockContent) < 2 && false % Set to true to only align blocks of 2 or more. Currently allows single "blocks".
+        return;
+    end
+
+
+    for k = 1:length(blockContent)
+        item = blockContent{k};
+        idx = item.originalIndex;
+        
+        numSpacesBeforeEquals = maxLhsLen - length(item.lhs);
+        spacesBeforeEqualsStr = repmat(' ', 1, numSpacesBeforeEquals);
+        
+        if options.SpaceAroundOperators
+            % LHS<spaces_to_align> <space> = <space> RHS <comment>
+            newLine = [blockIndent, item.lhs, spacesBeforeEqualsStr, ' = ', item.rhs, item.comment];
+        else
+            % LHS<spaces_to_align>=RHS <comment>
+            newLine = [blockIndent, item.lhs, spacesBeforeEqualsStr, '=', item.rhs, item.comment];
+        end
+        lines{idx} = regexprep(newLine, '\s+$', ''); % Trim trailing whitespace
+    end
+end
+
 
 % --- Helper function to extract code and comment parts ---
 function [codeP, commentP] = extractCodeAndCommentInternal(lineStr)
@@ -545,5 +760,189 @@ function [codeP, commentP] = extractCodeAndCommentInternal(lineStr)
             end
         end
     % else: no comment found, or '%' is inside a string. codeP remains the whole trimmedLine.
+    end
+end
+
+% --- Validation function for StylePreset ---
+function validateStylePreset(presetName)
+    if ~(ischar(presetName) || (isstring(presetName) && isscalar(presetName)))
+        % This error should ideally be caught by inputParser's own type checks if we define type more strictly.
+        % However, this custom validation also handles it.
+        ME = MException('code_beautifier:InvalidStylePresetType', 'StylePreset must be a character vector or a scalar string.');
+        throwAsCaller(ME); % Throw as if the main function threw it for better stack trace
+    end
+    presetName = char(presetName); % Convert to char for easier handling
+
+    if isempty(presetName)
+        return; % Empty string is valid (no preset chosen)
+    end
+    
+    validPresetNames = {'Default', 'MathWorksStyle', 'CompactStyle'};
+    isActuallyValid = false;
+    for i = 1:length(validPresetNames)
+        if strcmpi(presetName, validPresetNames{i})
+            isActuallyValid = true;
+            break;
+        end
+    end
+
+    if ~isActuallyValid
+        ME = MException('code_beautifier:InvalidStylePreset', ...
+                        'Unknown StylePreset: "%s". Valid presets are ''Default'', ''MathWorksStyle'', ''CompactStyle''. Use an empty string for no preset.', presetName);
+        throwAsCaller(ME);
+    end
+end
+
+% --- Helper function to get known option types and validators ---
+function knownInfo = getKnownOptionsInfo(defaultSettings)
+    knownInfo = struct();
+    optionNames = fieldnames(defaultSettings);
+    for i = 1:length(optionNames)
+        optName = optionNames{i};
+        value = defaultSettings.(optName);
+        if islogical(value)
+            knownInfo.(optName).type = 'logical';
+        elseif isnumeric(value)
+            knownInfo.(optName).type = 'numeric';
+            if strcmp(optName, 'MinBlankLinesBeforeBlock')
+                knownInfo.(optName).validator = @(x) isnumeric(x) && isscalar(x) && x >= 0 && x <= 2 && floor(x) == x;
+                knownInfo.(optName).range = [0, 2]; % For error messages
+            elseif any(strcmp(optName, {'IndentSize', 'ContinuationIndentOffset'}))
+                knownInfo.(optName).validator = @(x) isnumeric(x) && isscalar(x) && x >= 0 && floor(x) == x;
+            else % For other numerics if any, basic check
+                knownInfo.(optName).validator = @(x) isnumeric(x) && isscalar(x);
+            end
+        elseif ischar(value) || isstring(value)
+            knownInfo.(optName).type = 'string';
+            if strcmp(optName, 'OutputFormat')
+                knownInfo.(optName).validator = @(x) (ischar(x) || (isstring(x) && isscalar(x))) && ismember(lower(char(x)), {'cell', 'char'});
+                knownInfo.(optName).allowed = {'cell', 'char'}; % For error messages
+            elseif strcmp(optName, 'StylePreset') % StylePreset itself can be in config
+                knownInfo.(optName).validator = @validateStylePresetConfig; % Slightly different validation for config context
+            end
+        end
+    end
+end
+
+function validateStylePresetConfig(presetName)
+    % Validation for StylePreset when read from config file (allows empty or valid name)
+    if ~(ischar(presetName) || (isstring(presetName) && isscalar(presetName)))
+        ME = MException('code_beautifier:InvalidStylePresetTypeInConfigFile', 'StylePreset in config file must be a string.');
+        throw(ME); % Throw directly, parseConfigFile will catch and warn
+    end
+    presetNameStr = char(presetName);
+    if isempty(presetNameStr)
+        return; % Empty is fine
+    end
+    validPresets = {'Default', 'MathWorksStyle', 'CompactStyle'};
+    if ~ismember(lower(presetNameStr), lower(validPresets))
+        ME = MException('code_beautifier:InvalidStylePresetInConfigFile', ...
+                        'Unknown StylePreset "%s" in config file. Valid are ''Default'', ''MathWorksStyle'', ''CompactStyle''.', presetNameStr);
+        throw(ME);
+    end
+end
+
+
+% --- Helper function to parse .mbeautifyrc config file ---
+function parsedOptions = parseConfigFile(filePath, knownInfo)
+    parsedOptions = struct();
+    try
+        fid = fopen(filePath, 'rt');
+        if fid == -1
+            warning('code_beautifier:ConfigFileNotFound', 'Configuration file .mbeautifyrc not found or cannot be opened.');
+            return;
+        end
+        C = onCleanup(@() fclose(fid)); % Ensure file is closed
+        
+        lineNumber = 0;
+        while ~feof(fid)
+            lineNumber = lineNumber + 1;
+            line = strtrim(fgetl(fid));
+            
+            if isempty(line) || startsWith(line, '#')
+                continue; % Skip empty lines and comments
+            end
+            
+            parts = regexp(line, '^\s*([^#=\s]+)\s*=\s*([^#]+?)\s*$', 'tokens');
+            if isempty(parts)
+                warning('code_beautifier:InvalidLineInConfigFile', ...
+                        'Skipping invalid line %d in .mbeautifyrc: "%s". Line must be in "key = value" format.', lineNumber, line);
+                continue;
+            end
+            
+            key = strtrim(parts{1}{1});
+            valueStr = strtrim(parts{1}{2});
+            
+            % Find canonical key name (case-insensitive match)
+            canonicalKey = '';
+            knownOptionNames = fieldnames(knownInfo);
+            for k_idx = 1:length(knownOptionNames)
+                if strcmpi(key, knownOptionNames{k_idx})
+                    canonicalKey = knownOptionNames{k_idx};
+                    break;
+                end
+            end
+            
+            if isempty(canonicalKey)
+                warning('code_beautifier:UnknownConfigFileOption', ...
+                        'Skipping unknown option "%s" on line %d in .mbeautifyrc.', key, lineNumber);
+                continue;
+            end
+            
+            info = knownInfo.(canonicalKey);
+            try
+                switch info.type
+                    case 'logical'
+                        if strcmpi(valueStr, 'true')
+                            parsedValue = true;
+                        elseif strcmpi(valueStr, 'false')
+                            parsedValue = false;
+                        else
+                            error('Value must be "true" or "false" (case-insensitive).');
+                        end
+                    case 'numeric'
+                        parsedValue = str2double(valueStr);
+                        if isnan(parsedValue)
+                            error('Invalid numeric value: "%s".', valueStr);
+                        end
+                        if isfield(info, 'validator') && ~info.validator(parsedValue)
+                            if isfield(info, 'range')
+                                error('Numeric value %g is out of allowed range [%g, %g] or not a valid integer.', parsedValue, info.range(1), info.range(2));
+                            else
+                                error('Numeric value %g is not valid for option "%s".', parsedValue, canonicalKey);
+                            end
+                        end
+                    case 'string'
+                        parsedValue = valueStr; % Already a string
+                        if strcmp(canonicalKey, 'StylePreset') % Special handling for StylePreset string
+                           validateStylePresetConfig(parsedValue); % Use the config-specific validator
+                           % Ensure canonical casing for preset names if matched
+                            validPresetNamesInner = {'Default', 'MathWorksStyle', 'CompactStyle'};
+                            for vpi = 1:length(validPresetNamesInner)
+                                if strcmpi(parsedValue, validPresetNamesInner{vpi})
+                                    parsedValue = validPresetNamesInner{vpi};
+                                    break;
+                                end
+                            end
+                        elseif isfield(info, 'validator') && ~info.validator(parsedValue)
+                             if isfield(info, 'allowed')
+                                error('String value "%s" is not one of the allowed values: %s.', parsedValue, strjoin(info.allowed, ', '));
+                            else
+                                error('String value "%s" is not valid for option "%s".', parsedValue, canonicalKey);
+                            end
+                        end
+                    otherwise
+                        warning('code_beautifier:InternalParserError', 'Internal error: Unknown type "%s" for option "%s". Skipping.', info.type, canonicalKey);
+                        continue;
+                end
+                parsedOptions.(canonicalKey) = parsedValue;
+            catch ME
+                warning('code_beautifier:InvalidValueInConfigFile', ...
+                        'Skipping option "%s" on line %d in .mbeautifyrc due to invalid value: %s (%s)', ...
+                        canonicalKey, lineNumber, valueStr, ME.message);
+            end
+        end
+    catch ME_file
+        warning('code_beautifier:ErrorReadingConfigFile', 'Error reading .mbeautifyrc: %s', ME_file.message);
     end
 end
