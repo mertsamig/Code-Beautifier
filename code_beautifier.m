@@ -144,22 +144,25 @@ function beautifulCode = code_beautifier(rawCode, varargin)
         end
 
         % --- Indentation Logic for Current Code Line ---
-        currentLineEffectiveIndentLevel = indentLevel;
-        if ismember(firstWord, dedentKeywords) || ismember(firstWord, midBlockKeywords)
+        currentLineEffectiveIndentLevel = indentLevel; % Default for code lines
+
+        if ismember(firstWord, dedentKeywords) % Handles 'end'
             currentLineEffectiveIndentLevel = max(0, indentLevel - 1);
-            if strcmp(firstWord, 'end') && inSwitchBlockDepth > 0 && currentLineEffectiveIndentLevel < inSwitchBlockDepth
-                 % This 'end' likely closes a switch or a block within it
-                 % Heuristic: if this 'end' brings us out of the switch's base indent
-                 % For now, simple decrement of inSwitchBlockDepth on 'end' if > 0
-                 inSwitchBlockDepth = max(0, inSwitchBlockDepth -1); % Simple model
-                 if inSwitchBlockDepth == 0, inCaseBody = false; end % Exited all switches
-            elseif ismember(firstWord, {'case', 'otherwise'})
-                inCaseBody = true; 
-            elseif ismember(firstWord, {'elseif', 'else', 'catch'}) && ~isempty(firstWord)
-                inCaseBody = false; 
+            % State changes like inSwitchBlockDepth-- and inCaseBody=false for 'end'
+            % are handled in the "Update IndentLevel for NEXT line" section.
+        elseif ismember(firstWord, midBlockKeywords) % Handles 'elseif', 'else', 'catch', 'case', 'otherwise'
+            if ismember(firstWord, {'case', 'otherwise'})
+                % 'case' and 'otherwise' keywords are indented to the current indentLevel (switch_content_level)
+                % currentLineEffectiveIndentLevel remains 'indentLevel'
+                inCaseBody = true;
+            else % 'elseif', 'else', 'catch'
+                % These keywords are indented one level less than the block they are in
+                currentLineEffectiveIndentLevel = max(0, indentLevel - 1);
+                inCaseBody = false; % Reset inCaseBody if inside if/elseif/else constructs
             end
         end
         
+        % Additional indentation for statements within a 'case' or 'otherwise' body
         if inCaseBody && ~ismember(firstWord, allBlockCtrlKeywords) && ~isempty(firstWord)
              currentLineEffectiveIndentLevel = currentLineEffectiveIndentLevel + 1;
         end
@@ -202,32 +205,48 @@ function beautifulCode = code_beautifier(rawCode, varargin)
 
             % Operator Spacing
             if options.SpaceAroundOperators
-                opList = { ...
+                % Operators other than + and - (which need special handling)
+                opListGeneral = { ...
                     '==', '~=', '<=', '>=', '&&', '||', ... % Comparison & Logical
                     '.*', './', '.\\', '.^', ...             % Element-wise arithmetic
-                     '+', '-', '*', '/', '\\', '^', ...      % Arithmetic (binary context)
-                     '=' ...                                 % Assignment (single)
-                     };
+                    '*', '/', '\\', '^', ...                 % Other arithmetic (binary context)
+                    '=' ...                                  % Assignment (single)
+                    };
                 % Iterate to ensure longer ops are preferred (e.g. == over =)
-                for op_idx = 1:length(opList)
-                    op = opList{op_idx};
+                for op_idx = 1:length(opListGeneral)
+                    op = opListGeneral{op_idx};
                     escaped_op = regexptranslate('escape', op);
                     % Pattern: non-whitespace, optional spaces, operator, optional spaces, non-whitespace
-                    % Avoids adding spaces if already spaced, or at line start/end for unary
-                    % (?<!\.) before +,- to avoid breaking things like `1e-5` if op is `-`
-                    % This is complex. Simpler: add spaces, then fix known unary/scientific issues.
                     pat = ['(\S)\s*', escaped_op, '\s*(\S)']; 
                     rep = ['$1 ', op, ' $2'];
                     processedCodePart = regexprep(processedCodePart, pat, rep);
                 end
+
+                % Special handling for binary + and -
+                % Pattern: operand1_suffix space(s) +/- space(s) operand2_prefix
+                % Operand1_suffix: word character, ), ], or ' (transpose)
+                % Operand2_prefix: word character, (, [, or . (dot for struct/method or start of element-wise op)
+                s1 = '(\w|\)|\]|\'')'; % Capture group 1: char before operator
+                s2 = '(\w|\(|\[|\.)'; % Capture group 3: char after operator
+                pat_binary_plus_minus = [s1, '\s*([+\-])\s*', s2]; % Capture group 2: the operator +/-
+                rep_binary_plus_minus = '$1 $2 $3'; % Add single spaces
+                processedCodePart = regexprep(processedCodePart, pat_binary_plus_minus, rep_binary_plus_minus);
+                
                 % Unary plus/minus and scientific notation fixes
-                % Remove space after operators if followed by unary +/-
-                processedCodePart = regexprep(processedCodePart, '([=\(\[\{,\s\*\/\^<>~&|])\s+([+\-])\s*(\w|[\.\(])', '$1$2$3');
-                % Remove space if unary +/- is at the beginning of the code part
-                processedCodePart = regexprep(processedCodePart, '^([+\-])\s+(\w|[\.\(])', '$1$2');
+                % Fix 1: Remove space after certain preceding tokens if followed by unary +/-
+                % Preceding tokens: assignment, delimiters, logical short-circuit ops
+                unary_fix_class_1 = '[=\(\[\{,\s&|]'; % Note: removed * / \ ^ < > ~
+                pat_unary_fix_1 = ['(', unary_fix_class_1, ')\s+([+\-])\s*(\w|[\.\(])'];
+                processedCodePart = regexprep(processedCodePart, pat_unary_fix_1, '$1$2$3');
+                
+                % Fix 2: Remove space if unary +/- is at the beginning of the code part (after any indent)
+                pat_unary_fix_2 = ['^([+\-])\s+(\w|[\.\(])'];
+                processedCodePart = regexprep(processedCodePart, pat_unary_fix_2, '$1$2');
+                
                 % Fix scientific notation (e.g., 1 e - 5 -> 1e-5)
+                % These should run after general spacing to catch cases like '1e - 5' or '1 e-5'
                 processedCodePart = regexprep(processedCodePart, '(\d)\s*e\s*([+\-])\s*(\d+)', '$1e$2$3', 'ignorecase');
-                processedCodePart = regexprep(processedCodePart, '(\d)\s*e\s*(\d+)', '$1e$2', 'ignorecase');
+                processedCodePart = regexprep(processedCodePart, '(\d)\s*e\s*(\d+)', '$1e$2', 'ignorecase'); % For e.g. 1e10 (no sign)
             end
 
             if options.SpaceAfterComma
@@ -252,12 +271,34 @@ function beautifulCode = code_beautifier(rawCode, varargin)
         
         % --- Update IndentLevel for NEXT line ---
         if options.IndentSize > 0 % Only change indent level if indenting is active
-            if ismember(firstWord, dedentKeywords)
+            if ismember(firstWord, dedentKeywords) % 'end'
+                current_indentLevel_before_dedent = indentLevel;
                 indentLevel = max(0, indentLevel - 1);
-            elseif ismember(firstWord, midBlockKeywords)
-                indentLevel = max(0, indentLevel - 1); 
-                indentLevel = indentLevel + 1;         
-            elseif ismember(firstWord, indentKeywords)
+                
+                % If this 'end' keyword is potentially closing a switch block
+                if inSwitchBlockDepth > 0
+                    % This is a simplified model: assumes an 'end' might close the innermost switch.
+                    % A more robust system would use a stack to match 'end' to 'switch'.
+                    % If indentLevel actually decreased and was at a level consistent with switch content
+                    if indentLevel < current_indentLevel_before_dedent 
+                        % This 'end' caused a real dedent. Assume it closes the current switch block context.
+                        inSwitchBlockDepth = max(0, inSwitchBlockDepth - 1);
+                        if inSwitchBlockDepth == 0
+                            inCaseBody = false; % Exited the outermost switch structure
+                        end
+                    end
+                end
+            elseif ismember(firstWord, midBlockKeywords) % 'elseif', 'else', 'catch', 'case', 'otherwise'
+                if ismember(firstWord, {'case', 'otherwise'})
+                    % indentLevel for lines after 'case'/'otherwise' does not change here.
+                    % It's already at switch_content_level. Code inside the case
+                    % is handled by the 'inCaseBody' flag causing further indentation
+                    % of currentLineEffectiveIndentLevel.
+                else % 'elseif', 'else', 'catch'
+                    indentLevel = max(0, indentLevel - 1); % Dedent part for the keyword itself
+                    indentLevel = indentLevel + 1;         % Indent part for the content of the block
+                end
+            elseif ismember(firstWord, indentKeywords) % 'if', 'for', 'switch', ...
                 if strcmp(firstWord, 'switch')
                     inSwitchBlockDepth = inSwitchBlockDepth + 1;
                 end
@@ -277,7 +318,8 @@ function beautifulCode = code_beautifier(rawCode, varargin)
         isCurrentLineBlank = isempty(currentLineContent);
 
         % MinBlankLinesBeforeBlock logic
-        if options.MinBlankLinesBeforeBlock > 0 && ~isCurrentLineBlank
+        % Only apply if not at the very start of the file (finalLineCount > 0)
+        if options.MinBlankLinesBeforeBlock > 0 && ~isCurrentLineBlank && finalLineCount > 0
             % Check if current line starts a new block
             [codeP, ~] = extractCodeAndCommentInternal(currentLineContent); % Re-extract, simple
             firstWordToken = regexp(codeP, ['^\s*(', strjoin(indentKeywords, '|'), ')\b'], 'tokens', 'once');
@@ -336,28 +378,45 @@ end
 % --- Helper function to extract code and comment parts ---
 function [codeP, commentP] = extractCodeAndCommentInternal(lineStr)
     % This helper robustly separates the code part of a line from its trailing comment,
-    % correctly handling '%' characters that might appear inside string literals.
+    % correctly handling '%' characters that might appear inside single or double quoted string literals.
     
     trimmedLine = strtrim(lineStr);
     codeP = trimmedLine; 
     commentP = '';
     
-    potentialCommentStarts = strfind(trimmedLine, '%');
+    len = length(trimmedLine);
     actualCommentStartIdx = -1;
-
-    for cIdx = potentialCommentStarts
-        subLineBeforeComment = trimmedLine(1:cIdx-1);
+    
+    inSingleQuoteString = false;
+    inDoubleQuoteString = false;
+    
+    i = 1;
+    while i <= len
+        char = trimmedLine(i);
         
-        % Count UNESCAPED single quotes before the potential comment character.
-        % An unescaped quote marks the beginning or end of a string literal.
-        % Escaped quotes ('') within a string do not change the "in-string" state.
-        tempSubLine = regexprep(subLineBeforeComment, '''''', char(1)); % Replace '' with a placeholder
-        numActualSingleQuotes = length(strfind(tempSubLine, ''''));
-        
-        if mod(numActualSingleQuotes, 2) == 0 % Even number of 'actual' quotes means '%' is NOT in a string
-            actualCommentStartIdx = cIdx;
-            break;
+        if char == '''' % Single quote
+            if ~inDoubleQuoteString % Only process if not in a double-quoted string
+                if i+1 <= len && trimmedLine(i+1) == '''' % Escaped single quote ''
+                    i = i + 1; % Skip next quote
+                else
+                    inSingleQuoteString = ~inSingleQuoteString;
+                end
+            end
+        elseif char == '"' % Double quote
+            if ~inSingleQuoteString % Only process if not in a single-quoted string
+                if i+1 <= len && trimmedLine(i+1) == '"' % Escaped double quote ""
+                    i = i + 1; % Skip next quote
+                else
+                    inDoubleQuoteString = ~inDoubleQuoteString;
+                end
+            end
+        elseif char == '%'
+            if ~inSingleQuoteString && ~inDoubleQuoteString
+                actualCommentStartIdx = i;
+                break; % Found the actual comment start
+            end
         end
+        i = i + 1;
     end
 
     if actualCommentStartIdx ~= -1
@@ -367,11 +426,14 @@ function [codeP, commentP] = extractCodeAndCommentInternal(lineStr)
         else
             codeP = strtrim(trimmedLine(1:actualCommentStartIdx-1));
             commentContent = strtrim(trimmedLine(actualCommentStartIdx+1:end));
-            if isempty(commentContent)
-                commentP = '%'; % Just a '%' symbol as comment
+            if isempty(commentContent) && actualCommentStartIdx == len % trailing % like "code %"
+                 commentP = '%'; % Just a '%' symbol as comment
+            elseif isempty(commentContent) % trailing % with space like "code % "
+                 commentP = ' %';
             else
                 commentP = [' % ', commentContent]; % Standardize to " % content"
             end
         end
+    % else: no comment found, or '%' is inside a string. codeP remains the whole trimmedLine.
     end
 end
