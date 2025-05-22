@@ -100,70 +100,96 @@ function beautifulCode = code_beautifier(rawCode, varargin)
     );
 
     % --- Determine Effective Defaults (Precedence: Function Defaults -> Config File -> Preset -> Direct Args) ---
-    
+    % The effective options are determined in a specific order of precedence:
+    % 1. Hardcoded Defaults: These are the base settings defined in `stylePresets.Default`.
+    % 2. Config File Options: Settings loaded from `.mbeautifyrc` override hardcoded defaults.
+    % 3. Style Preset: A chosen style preset (either from config file or direct argument)
+    %    overrides settings from step 1 and 2. If specified in both, direct argument preset wins.
+    % 4. Direct Arguments: Options passed directly to `code_beautifier` override all previous settings.
+
     % 1. Start with hardcoded function defaults (via stylePresets.Default)
+    % `effectiveDefaults` will be progressively updated to reflect the applied settings at each stage.
+    % Initially, it holds the most basic defaults.
     effectiveDefaults = stylePresets.Default;
     
     % 2. Load and Overlay Config File Options
-    knownOptionsInfo = getKnownOptionsInfo(stylePresets.Default); % Get type info for parsing
-    configFilePath = fullfile(pwd, '.mbeautifyrc');
-    configFileOptions = struct();
-    if exist(configFilePath, 'file')
-        configFileOptions = parseConfigFile(configFilePath, knownOptionsInfo);
-        % Overlay configFileOptions onto effectiveDefaults
+    % Load options from `.mbeautifyrc` if it exists in the current working directory. 
+    % These options will override the initial hardcoded defaults.
+    % `knownOptionsInfo` provides metadata about each option (e.g., type) for parsing.
+    knownOptionsInfo = getKnownOptionsInfo(stylePresets.Default); % Get type info for parsing config file values.
+    configFilePath = fullfile(pwd, '.mbeautifyrc'); % Define the path to the configuration file.
+    configFileOptions = struct(); % Initialize a struct to hold options loaded from the config file.
+    if exist(configFilePath, 'file') % Check if the config file exists.
+        configFileOptions = parseConfigFile(configFilePath, knownOptionsInfo); % Parse the file.
+        % Overlay options from the config file onto the current `effectiveDefaults`.
+        % If an option from the config file is also in `effectiveDefaults`, its value is updated.
         fieldsToUpdate = fieldnames(configFileOptions);
         for k_f = 1:length(fieldsToUpdate)
             fieldName = fieldsToUpdate{k_f};
-            if isfield(effectiveDefaults, fieldName) % Ensure it's a known option
+            if isfield(effectiveDefaults, fieldName) % Ensure the option is a known and valid one.
                 effectiveDefaults.(fieldName) = configFileOptions.(fieldName);
             end
         end
     end
 
     % 3. Determine and Overlay StylePreset Options
-    %    The StylePreset can be from varargin (highest precedence for choosing the preset) or from config file.
+    %    A StylePreset can be specified either in the `.mbeautifyrc` config file or as a direct
+    %    argument to the `code_beautifier` function. 
+    %    The direct argument for 'StylePreset' takes precedence if both are provided.
+    %    Once the `finalPresetName` is determined, its associated settings (from `stylePresets` struct)
+    %    override any corresponding settings currently in `effectiveDefaults`.
     
-    % Check varargin for 'StylePreset' first
-    directArgPresetName = '';
-    for k_v = 1:2:length(varargin)
+    % Check varargin (direct function arguments) for 'StylePreset' first, as it has higher precedence.
+    directArgPresetName = ''; % Stores the preset name if provided as a direct argument.
+    for k_v = 1:2:length(varargin) % Iterate through Name-Value pairs in varargin.
         if strcmpi(varargin{k_v}, 'StylePreset') && k_v + 1 <= length(varargin)
-            directArgPresetName = char(varargin{k_v+1});
+            directArgPresetName = char(varargin{k_v+1}); % Found 'StylePreset' in direct args.
             break;
         end
     end
     
+    % `finalPresetName` will store the name of the preset that will ultimately be applied.
+    % It's determined by checking direct arguments first, then the config file options.
     finalPresetName = '';
     if ~isempty(directArgPresetName)
-        % Validate directArgPresetName. If invalid, validateStylePreset will error later.
-        % For now, assume it might be valid to select it.
+        % A preset name was provided as a direct argument. This takes precedence.
+        % Actual validation of this name (i.e., whether it's a known/valid preset like 'Default', 'MathWorksStyle')
+        % will occur later during the main input parsing stage (using `validateStylePreset`).
         finalPresetName = directArgPresetName;
     elseif isfield(configFileOptions, 'StylePreset') && ~isempty(configFileOptions.StylePreset)
-        % Validate preset from config file
+        % No direct 'StylePreset' argument, so check if one was specified in the config file.
+        % Validate that this preset name from the config file is one of the known, valid preset names.
         try
-            validateStylePreset(configFileOptions.StylePreset); % Ensure it's a known preset string
-            finalPresetName = char(configFileOptions.StylePreset);
+            validateStylePreset(configFileOptions.StylePreset); % This function checks against known preset names.
+            finalPresetName = char(configFileOptions.StylePreset); % If valid, use this preset name.
         catch ME
+            % If `validateStylePreset` throws an error (meaning the name is invalid),
+            % issue a warning and ignore the invalid preset from the config file.
             warning('code_beautifier:InvalidStylePresetInConfigFile', ...
                     'Invalid StylePreset "%s" in .mbeautifyrc: %s. Ignoring this preset.', ...
                     configFileOptions.StylePreset, ME.message);
         end
     end
 
+    % If a `finalPresetName` has been determined (either from a direct argument or a valid config file entry),
+    % apply its settings by overlaying them onto `effectiveDefaults`.
     if ~isempty(finalPresetName)
-        % Check if this finalPresetName is actually valid before trying to access stylePresets.(finalPresetName)
-        % The validateStylePreset function (used by inputParser later) will catch genuinely invalid names.
-        % Here, we just need to ensure it's one of the defined preset structs.
-        validPresetNames = fieldnames(stylePresets);
-        isKnownPreset = false;
+        % Ensure `finalPresetName` corresponds to one of the defined preset structures
+        % (e.g., `stylePresets.Default`, `stylePresets.MathWorksStyle`).
+        % This also canonicalizes the casing of `finalPresetName` (e.g., 'default' becomes 'Default').
+        validPresetNames = fieldnames(stylePresets); % Get names of all defined preset structures.
+        isKnownPreset = false; % Flag to track if `finalPresetName` matches a known preset.
         for vp_idx = 1:length(validPresetNames)
-            if strcmpi(finalPresetName, validPresetNames{vp_idx})
-                finalPresetName = validPresetNames{vp_idx}; % Use the canonical casing
+            if strcmpi(finalPresetName, validPresetNames{vp_idx}) % Case-insensitive matching.
+                finalPresetName = validPresetNames{vp_idx}; % Use the canonical casing (e.g., 'Default').
                 isKnownPreset = true;
                 break;
             end
         end
 
         if isKnownPreset
+            % If `finalPresetName` is a known and valid preset, retrieve its settings
+            % from the `stylePresets` struct and apply them, overriding current `effectiveDefaults`.
             presetSettingsToApply = stylePresets.(finalPresetName);
             fieldsToUpdate = fieldnames(presetSettingsToApply);
             for k_f = 1:length(fieldsToUpdate)
@@ -171,21 +197,34 @@ function beautifulCode = code_beautifier(rawCode, varargin)
                 effectiveDefaults.(fieldName) = presetSettingsToApply.(fieldName);
             end
         elseif ~isempty(directArgPresetName) && strcmpi(directArgPresetName, finalPresetName)
-            % If it came from direct arg and is not a known preset struct name (e.g. '  Default  ')
-            % it will be caught by the main input parser's validateStylePreset.
-            % We don't issue a warning here for that case.
-        elseif ~isempty(finalPresetName) % Came from config or was an unknown preset string
-             % Warning for unknown (but non-empty) preset names not from direct args already handled by validateStylePreset in config loading
-             % or will be caught by the main parser.
+            % This case occurs if `directArgPresetName` was given (e.g., 'myownstyle') but it's not
+            % among the `stylePresets` keys. The main `inputParser` will later catch this as an
+            % invalid 'StylePreset' value if `validateStylePreset` is correctly set up for the parameter.
+            % No warning is explicitly issued here to avoid redundancy with the inputParser's error.
+        elseif ~isempty(finalPresetName) 
+            % This branch might be reached if `finalPresetName` was set from an invalid config file preset
+            % (which should have already generated a warning) and was not overridden by a direct argument.
+            % The main input parser will ultimately handle any invalid preset name that reaches it.
         end
     end
 
     % --- Input Parsing Setup (using effectiveDefaults) ---
+    % The `inputParser` is now initialized. The default values for each parameter are drawn from
+    % `effectiveDefaults`. At this stage, `effectiveDefaults` contains settings derived from:
+    %   1st: Hardcoded Defaults (from `stylePresets.Default`)
+    %   2nd: Overridden by `.mbeautifyrc` Config File Options (if file exists and options are valid)
+    %   3rd: Overridden by a Chosen Style Preset's settings (if a preset was specified in config or direct args and was valid)
+    %
+    % Any options passed directly as arguments in `varargin` to `code_beautifier` will, during the `parse()` call,
+    % override these `effectiveDefaults`. This completes the specified order of precedence:
+    % Hardcoded -> Config File -> Style Preset -> Direct Arguments.
     p = inputParser;
-    addRequired(p, 'rawCode', @(x) ischar(x) || iscellstr(x) || isstring(x));
+    addRequired(p, 'rawCode', @(x) ischar(x) || iscellstr(x) || isstring(x)); % The input code itself.
     
-    % Add parameters with their effective defaults and validation functions
-    addParameter(p, 'StylePreset', effectiveDefaults.StylePreset, @validateStylePreset); % StylePreset default itself is '' or from config
+    % Add all beautifier options as parameters to the input parser.
+    % Their default values are set from `effectiveDefaults` which have been built up.
+    % Each parameter also has a validation function to ensure its type and range are correct.
+    addParameter(p, 'StylePreset', effectiveDefaults.StylePreset, @validateStylePreset); % Note: 'StylePreset' itself is an option that influences other defaults.
     addParameter(p, 'IndentSize', effectiveDefaults.IndentSize, @(x) isnumeric(x) && isscalar(x) && x >= 0 && floor(x) == x);
     addParameter(p, 'UseTabs', effectiveDefaults.UseTabs, @(x) islogical(x) && isscalar(x));
     addParameter(p, 'SpaceAroundOperators', effectiveDefaults.SpaceAroundOperators, @(x) islogical(x) && isscalar(x));
@@ -198,302 +237,374 @@ function beautifulCode = code_beautifier(rawCode, varargin)
     addParameter(p, 'AlignAssignments', effectiveDefaults.AlignAssignments, @(x) islogical(x) && isscalar(x));
     addParameter(p, 'OutputFormat', effectiveDefaults.OutputFormat, @(x) (ischar(x) || (isstring(x) && isscalar(x))) && ismember(lower(char(x)), {'cell', 'char'}));
 
-    % 4. Parse Direct Arguments (varargin) which will override the effectiveDefaults
+    % 4. Parse Direct Arguments (varargin). These arguments have the highest precedence.
+    %    The inputParser takes `rawCode` (the required argument) and `varargin` (optional Name-Value pairs).
+    %    Any Name-Value pairs in `varargin` that match defined parameters will override the defaults
+    %    that were previously set in `effectiveDefaults`.
+    %    This step finalizes the option precedence: Hardcoded -> Config File -> Style Preset -> Direct Arguments.
     parse(p, rawCode, varargin{:});
-    options = p.Results;
+    options = p.Results; % `options` now holds the final, fully resolved settings to be used by the beautifier.
     
-    % Ensure StylePreset in options is the canonical one if it was matched
+    % Final check for 'StylePreset' canonical casing within the fully resolved `options`.
+    % If a 'StylePreset' was provided as a direct argument (e.g., 'compactstyle' instead of 'CompactStyle')
+    % and it successfully matched a known preset (due to case-insensitive validation),
+    % this ensures that `options.StylePreset` stores the canonical form (e.g., 'CompactStyle').
+    % This is mainly for internal consistency if `options.StylePreset` is directly queried later.
     if ~isempty(options.StylePreset)
         currentPresetVal = char(options.StylePreset);
-        validPresetNames = fieldnames(stylePresets);
+        validPresetNames = fieldnames(stylePresets); % Canonical names are defined in `stylePresets`.
         for vp_idx = 1:length(validPresetNames)
-            if strcmpi(currentPresetVal, validPresetNames{vp_idx})
-                options.StylePreset = validPresetNames{vp_idx}; % Use canonical casing
+            if strcmpi(currentPresetVal, validPresetNames{vp_idx}) % Case-insensitive check against canonical names.
+                options.StylePreset = validPresetNames{vp_idx}; % Ensure `options.StylePreset` uses the canonical casing.
                 break;
             end
         end
     end
 
+    % Determine the character(s) to use for indentation based on the final options.
     if options.UseTabs
-        indentChar = sprintf('\t'); % Use sprintf for tab character
-        indentUnit = 1;
+        indentChar = sprintf('\t'); % Use a literal tab character if `UseTabs` is true.
+        indentUnit = 1;             % Each indent level corresponds to one tab character.
     else
-        indentChar = ' ';
-        indentUnit = options.IndentSize;
+        indentChar = ' '; % Use space characters if `UseTabs` is false.
+        indentUnit = options.IndentSize; % The number of spaces per indent level is defined by `IndentSize`.
     end
 
-    % Convert input to cell array of lines
-    if ischar(rawCode)
-        lines = strsplit(rawCode, {'\r\n', '\n', '\r'}, 'CollapseDelimiters', false)';
-    elseif isstring(rawCode)
-        if isscalar(rawCode)
+    % Convert input `rawCode` (which can be char, string array, or cell array of strings) 
+    % into a standardized cell array of strings (`lines`), where each cell represents one line of code.
+    % This allows uniform line-by-line processing later.
+    if ischar(rawCode) % If input is a single character array (potentially containing multiple lines via \n).
+        lines = strsplit(rawCode, {'\r\n', '\n', '\r'}, 'CollapseDelimiters', false)'; % Split by various newline sequences.
+    elseif isstring(rawCode) % If input is a MATLAB string array (R2016b+).
+        if isscalar(rawCode) % If it's a single string element (can also contain multiple lines).
              lines = strsplit(rawCode, {'\r\n', '\n', '\r'}, 'CollapseDelimiters', false)';
-        else
-            lines = cellstr(rawCode);
+        else % If it's a string array where each element is intended to be a line.
+            lines = cellstr(rawCode); % Convert to a cell array of character vectors.
         end
-    else % Assumed cellstr
+    else % Assumed to be a cell array of strings (cellstr), which is already in the desired format.
         lines = rawCode;
     end
 
     % --- Keywords Definitions ---
-    indentKeywords     = {'if', 'for', 'while', 'switch', 'try', 'parfor', 'function', 'classdef', 'properties', 'methods', 'events', 'arguments'};
-    dedentKeywords     = {'end'};
-    midBlockKeywords   = {'elseif', 'else', 'catch', 'case', 'otherwise'};
-    allBlockCtrlKeywords = [indentKeywords, dedentKeywords, midBlockKeywords];
-    firstWordPattern   = ['^\s*(', strjoin(allBlockCtrlKeywords, '|'), ')\b']; % \b for word boundary
+    % Define MATLAB keywords that influence indentation logic.
+    indentKeywords     = {'if', 'for', 'while', 'switch', 'try', 'parfor', 'function', 'classdef', 'properties', 'methods', 'events', 'arguments'}; % Keywords that start an indented block.
+    dedentKeywords     = {'end'}; % Keywords that end an indented block.
+    midBlockKeywords   = {'elseif', 'else', 'catch', 'case', 'otherwise'}; % Keywords that occur mid-block, often dedenting then indenting.
+    allBlockCtrlKeywords = [indentKeywords, dedentKeywords, midBlockKeywords]; % Combined list of all control keywords.
+    firstWordPattern   = ['^\s*(', strjoin(allBlockCtrlKeywords, '|'), ')\b']; % Regex pattern to efficiently find the first control keyword on a line.
 
     % --- Main Processing Loop ---
-    indentLevel = 0;
-    tempBeautifulLines = cell(size(lines)); % Pre-allocate for processed lines
-    inBlockComment = false; % For %{ ... %}
-    previousLineEndedWithContinuation = false;
-    previousLineActualIndentStr = '';
+    % This loop iterates through each line of the input code (`lines`) to apply formatting rules.
+    % Key stages for each line include:
+    % 1. Block Comment Handling (%{ ... %}): These are passed through with base indentation.
+    % 2. Empty Line Handling: Initially marked, final processing occurs in post-processing stage.
+    % 3. Code/Comment Extraction: Separates the functional code part of a line from its trailing comment (e.g., "x = 1; % comment").
+    % 4. Indentation Logic: Determines the correct indentation level for the current line based on:
+    %    - Control keywords (if, for, end, etc.).
+    %    - Whether the line is a continuation of the previous line (ends with '...').
+    %    - Special context for 'switch' and 'case' statements.
+    % 5. Spacing and Semicolon Logic:
+    %    - Adds or removes spaces around operators (e.g., '+', '=', '==').
+    %    - Ensures consistent spacing after commas.
+    %    - Manages semicolons: removing redundant ones or (optionally) adding them to suppress output.
+    % 6. Constructing the Beautiful Line: Assembles the indented code part and the comment part.
+    % 7. Updating IndentLevel for Next Line: Adjusts the base `indentLevel` for subsequent lines based on keywords found on the current line.
+
+    indentLevel = 0; % Current base indentation level (number of indent units).
+    tempBeautifulLines = cell(size(lines)); % Pre-allocate cell array for the processed lines.
+    inBlockComment = false; % Flag: true if currently processing lines within a %{ ... %} block comment.
+    previousLineEndedWithContinuation = false; % Flag: true if the *previous* processed line ended with '...'.
+    previousLineActualIndentStr = ''; % Stores the actual indent string (spaces/tabs) of the previously processed code/comment line.
+                                      % Used for aligning continuation lines relative to the previous line's content.
     
-    inSwitchBlockDepth = 0; 
-    inCaseBody = false;     
+    inSwitchBlockDepth = 0; % Counter for nested 'switch' statements. Helps manage indentation for 'case' and 'otherwise'.
+                            % Each 'switch' increments it, each 'end' (assumed to close a switch) decrements it.
+    inCaseBody = false;     % Flag: true if currently processing lines that are part of a 'case' or 'otherwise' block's body
+                            % (i.e., the lines indented underneath a 'case' or 'otherwise' keyword).
+                            % This flag triggers an additional indent level for these lines.
 
-    for i = 1:length(lines)
-        originalLine = lines{i};
-        trimmedOriginalLine = strtrim(originalLine);
+    for i = 1:length(lines) % Loop through each line of the input code.
+        originalLine = lines{i}; % The raw, original line.
+        trimmedOriginalLine = strtrim(originalLine); % Line with leading/trailing whitespace removed
 
-        % --- Handle Block Comments %{ ... %} ---
-        if startsWith(trimmedOriginalLine, '%{')
+        % --- Stage 1: Handle Block Comments %{ ... %} ---
+        % Block comments are preserved with their base indentation matching the current `indentLevel`.
+        % Original relative indentation within the block comment is maintained.
+        if startsWith(trimmedOriginalLine, '%{') % Start of a block comment
             inBlockComment = true;
             baseIndentStr = repmat(indentChar, 1, indentLevel * indentUnit * (options.IndentSize > 0) );
-            tempBeautifulLines{i} = [baseIndentStr, trimmedOriginalLine];
+            tempBeautifulLines{i} = [baseIndentStr, trimmedOriginalLine]; % Apply base indent
             previousLineEndedWithContinuation = false;
-            continue;
-        elseif inBlockComment
+            continue; % Move to next line
+        elseif inBlockComment % Inside a block comment
             baseIndentStr = repmat(indentChar, 1, indentLevel * indentUnit * (options.IndentSize > 0) );
-            if endsWith(trimmedOriginalLine, '%}')
+            if endsWith(trimmedOriginalLine, '%}') % End of a block comment
                 inBlockComment = false;
             end
-            % Preserve original leading spaces within the block comment content itself, after base indent
+            % Preserve original leading spaces for content lines within the block comment, after applying base indent.
             tempBeautifulLines{i} = [baseIndentStr, originalLine]; 
             previousLineEndedWithContinuation = false;
-            continue;
+            continue; % Move to next line
         end
 
-        % --- Handle Empty Lines (initially, will be refined later) ---
+        % --- Stage 2: Handle Empty Lines ---
+        % Empty or whitespace-only lines are marked as empty for now.
+        % Final handling of blank lines (preserving/removing) happens in post-processing.
         if isempty(trimmedOriginalLine)
             tempBeautifulLines{i} = ''; 
             previousLineEndedWithContinuation = false;
-            continue;
+            continue; % Move to next line
         end
         
-        % --- Extract Code and Comment Parts ---
+        % --- Stage 3: Extract Code and Comment Parts ---
+        % Separates the executable code from the trailing line comment (e.g., "code; % comment").
+        % Handles cases where '%' might be part of a string literal.
         [codePart, commentPart] = extractCodeAndCommentInternal(trimmedOriginalLine);
         
-        % --- Determine First Word (Keyword) ---
+        % --- Determine First Word (Keyword) for Indentation ---
+        % Check if the first word in the code part is a control keyword.
         firstWordToken = regexp(codePart, firstWordPattern, 'tokens', 'once');
         if ~isempty(firstWordToken), firstWord = firstWordToken{1}; else, firstWord = ''; end
 
-        % --- Line is Only a Comment ---
-        if isempty(codePart) && ~isempty(commentPart)
+        % --- Line is Only a Comment (after block comments and empty lines are handled) ---
+        % If `codePart` is empty, the line is treated as a full-line comment.
+        if isempty(codePart) && ~isempty(commentPart) % True if line is effectively comment-only
             currentLineEffectiveIndentLevel = indentLevel;
-            if inCaseBody % Comments inside case body also get case offset
+            % If inside a 'case' body, comments are indented further to align with case content.
+            if inCaseBody 
                  currentLineEffectiveIndentLevel = currentLineEffectiveIndentLevel + 1;
             end
             currentIndentStr = repmat(indentChar, 1, currentLineEffectiveIndentLevel * indentUnit * (options.IndentSize > 0));
             
-            if previousLineEndedWithContinuation % Comment continuing a code line
-                currentIndentStr = [previousLineActualIndentStr, ...
-                                    repmat(indentChar, 1, options.ContinuationIndentOffset * indentUnit * (options.IndentSize > 0))];
+            % If this comment line is a continuation of a previous code line (e.g. code ... % comment part 1
+            %                                                                  % comment part 2)
+            % then its indent should be based on the continued line's indent.
+            if previousLineEndedWithContinuation 
+                currentIndentStr = [previousLineActualIndentStr, ... % Start with previous line's actual code indent
+                                    repmat(indentChar, 1, options.ContinuationIndentOffset * indentUnit * (options.IndentSize > 0))]; % Add continuation offset
             end
-            tempBeautifulLines{i} = regexprep([currentIndentStr, commentPart], '\s+$', '');
+            tempBeautifulLines{i} = regexprep([currentIndentStr, commentPart], '\s+$', ''); % Add indent and trim trailing space
             previousLineEndedWithContinuation = false; 
-            previousLineActualIndentStr = currentIndentStr; % Save indent of this comment line
-            continue;
+            previousLineActualIndentStr = currentIndentStr; % Store this comment's indent for potential next continuation
+            continue; % Move to next line
         end
 
-        % --- Indentation Logic for Current Code Line ---
-        currentLineEffectiveIndentLevel = indentLevel; % Default for code lines
+        % --- Stage 4: Indentation Logic for Current Code Line (that contains code) ---
+        currentLineEffectiveIndentLevel = indentLevel; % Default indent level for this code line
 
         if ismember(firstWord, dedentKeywords) % Handles 'end'
-            currentLineEffectiveIndentLevel = max(0, indentLevel - 1);
-            % State changes like inSwitchBlockDepth-- and inCaseBody=false for 'end'
-            % are handled in the "Update IndentLevel for NEXT line" section.
+            currentLineEffectiveIndentLevel = max(0, indentLevel - 1); % 'end' is dedented
+            % State changes for `inSwitchBlockDepth` and `inCaseBody` when an 'end'
+            % closes a switch are handled in the "Update IndentLevel for NEXT line" section.
         elseif ismember(firstWord, midBlockKeywords) % Handles 'elseif', 'else', 'catch', 'case', 'otherwise'
             if ismember(firstWord, {'case', 'otherwise'})
-                % 'case' and 'otherwise' keywords are indented to the current indentLevel (switch_content_level)
-                % currentLineEffectiveIndentLevel remains 'indentLevel'
-                inCaseBody = true;
+                % 'case' and 'otherwise' keywords are indented to the current `indentLevel`,
+                % which is the level of the 'switch' statement's content.
+                % `currentLineEffectiveIndentLevel` remains `indentLevel`.
+                inCaseBody = true; % Set flag: subsequent lines are content of this case/otherwise.
             else % 'elseif', 'else', 'catch'
-                % These keywords are indented one level less than the block they are in
+                % These keywords are dedented one level relative to the block they are part of.
                 currentLineEffectiveIndentLevel = max(0, indentLevel - 1);
-                inCaseBody = false; % Reset inCaseBody if inside if/elseif/else constructs
+                inCaseBody = false; % Reset flag, not in a 'case' body for if/try blocks.
             end
         end
         
-        % Additional indentation for statements within a 'case' or 'otherwise' body
-        if inCaseBody && ~ismember(firstWord, allBlockCtrlKeywords) && ~isempty(firstWord)
-             currentLineEffectiveIndentLevel = currentLineEffectiveIndentLevel + 1;
+        % Additional indentation for statements that are *inside* a 'case' or 'otherwise' body.
+        % This applies if `inCaseBody` is true (set by 'case' or 'otherwise' keyword)
+        % AND the current line is not itself a block control keyword (like 'if' nested in 'case').
+        if inCaseBody && ~ismember(firstWord, allBlockCtrlKeywords) && ~isempty(firstWord) % `~isempty(firstWord)` ensures it's not just a comment
+             currentLineEffectiveIndentLevel = currentLineEffectiveIndentLevel + 1; % Indent case content further
         end
 
+        % Determine the indent string based on the calculated effective level.
         currentIndentStr = repmat(indentChar, 1, currentLineEffectiveIndentLevel * indentUnit * (options.IndentSize > 0));
 
+        % If this line is a continuation of the previous line.
         if previousLineEndedWithContinuation
-            currentIndentStr = [previousLineActualIndentStr, ...
-                                repmat(indentChar, 1, options.ContinuationIndentOffset * indentUnit * (options.IndentSize > 0))];
+            % The indent string is based on the previous line's actual code indent plus continuation offset.
+            currentIndentStr = [previousLineActualIndentStr, ... % Start with previous line's code indent
+                                repmat(indentChar, 1, options.ContinuationIndentOffset * indentUnit * (options.IndentSize > 0))]; % Add offset
         end
-        previousLineActualIndentStr = currentIndentStr; % Store for potential next continuation
+        previousLineActualIndentStr = currentIndentStr; % Store this line's code indent for any potential next continuation line.
 
-        % --- Spacing and Semicolon Logic (Applied to codePart) ---
-        processedCodePart = codePart;
+        % --- Stage 5: Spacing and Semicolon Logic (Applied to codePart) ---
+        processedCodePart = codePart; % Start with the extracted code part
         if ~isempty(processedCodePart)
-            % Semicolon Management (before spacing operators, as it might change line end)
+            % Semicolon Management (applied before spacing operators, as it might affect line end)
             if options.RemoveRedundantSemicolons
-                processedCodePart = regexprep(processedCodePart, ';(\s*;)+', ';'); % ;;+ -> ;
+                processedCodePart = regexprep(processedCodePart, ';(\s*;)+', ';'); % Replace ';;' or more with a single ';'
+                % Remove semicolon after 'end' if it's not syntactically required (e.g., not `end);` for anonymous functions)
                 if strcmp(firstWord, 'end') && endsWith(strtrim(processedCodePart), ';')
                     tempTrimmed = strtrim(processedCodePart);
-                    if ~ismember(tempTrimmed(end-1), {')', ']', '}'}) % Avoid end); -> end)
-                         processedCodePart = strtrim(tempTrimmed(1:end-1));
+                    if ~ismember(tempTrimmed(end-1), {')', ']', '}'}) % Avoid changing `end);` to `end)`
+                         processedCodePart = strtrim(tempTrimmed(1:end-1)); % Remove the semicolon
                     end
                 end
             end
 
-            if options.AddSemicolonsToStatements
-                isAssignment = ~isempty(regexp(processedCodePart, '(?<![=<>~.\s])=(?![=])', 'once')); % Avoid ==, <=, etc. and .=
-                isKeywordLine = ~isempty(firstWord);
-                endsWithContOrSemi = endsWith(strtrim(processedCodePart), '...') || endsWith(strtrim(processedCodePart), ';');
-                % Heuristic: add semicolon if it looks like a function call or expression
-                % and is not an assignment, keyword line, or already ends with ; or ...
-                isFunctionCallLike = ~isempty(regexp(processedCodePart, '\w\s*\(.*\)', 'once')); % e.g. func()
-                isSimpleExpression = ~isempty(regexp(processedCodePart, '\w', 'once')) && isempty(regexp(processedCodePart,'^\s*\w+\s*$', 'once')); % More than just a var
-
+            if options.AddSemicolonsToStatements % Experimental feature
+                % Determine if the line looks like a statement that would print to command window if no semicolon.
+                isAssignment = ~isempty(regexp(processedCodePart, '(?<![=<>~.\s])=(?![=])', 'once')); % True if line contains an assignment (not ==, <= etc.)
+                isKeywordLine = ~isempty(firstWord); % True if line starts with a control keyword
+                endsWithContOrSemi = endsWith(strtrim(processedCodePart), '...') || endsWith(strtrim(processedCodePart), ';'); % True if ends with ... or ;
+                
+                % Heuristic: Add semicolon if it looks like a function call or simple expression,
+                % and is NOT an assignment, NOT a keyword line, and NOT already ending with ';' or '...'.
+                isFunctionCallLike = ~isempty(regexp(processedCodePart, '\w\s*\(.*\)', 'once')); % e.g., func() or obj.method()
+                isSimpleExpression = ~isempty(regexp(processedCodePart, '\w', 'once')) && ... % Contains some word characters
+                                     isempty(regexp(processedCodePart,'^\s*\w+\s*$', 'once')); % Is not just a single variable name
+                                     
                 if ~isAssignment && ~isKeywordLine && ~endsWithContOrSemi && (isFunctionCallLike || isSimpleExpression)
-                    processedCodePart = [processedCodePart, ';'];
+                    processedCodePart = [processedCodePart, ';']; % Append semicolon
                 end
             end
 
             % Operator Spacing
             if options.SpaceAroundOperators
-                % Operators other than + and - (which need special handling)
+                % General operators (excluding +,- which need context, and element-wise handled by .*, ./ etc.)
                 opListGeneral = { ...
-                    '==', '~=', '<=', '>=', '&&', '||', ... % Comparison & Logical
-                    '.*', './', '.\\', '.^', ...             % Element-wise arithmetic
-                    '*', '/', '\\', '^', ...                 % Other arithmetic (binary context)
-                    '=' ...                                  % Assignment (single)
+                    '==', '~=', '<=', '>=', '&&', '||', ... % Comparison & Logical operators
+                    '.*', './', '.\\', '.^', ...             % Element-wise arithmetic operators
+                    '*', '/', '\\', '^', ...                 % Other arithmetic operators (in binary context)
+                    '=' ...                                  % Assignment operator
                     };
-                % Iterate to ensure longer ops are preferred (e.g. == over =)
+                % Iterate to ensure longer operators (e.g., '==') are processed before shorter ones (e.g., '=')
+                % to prevent incorrect spacing.
                 for op_idx = 1:length(opListGeneral)
                     op = opListGeneral{op_idx};
-                    escaped_op = regexptranslate('escape', op);
-                    % Pattern: non-whitespace, optional spaces, operator, optional spaces, non-whitespace
+                    escaped_op = regexptranslate('escape', op); % Escape special regex characters in operator
+                    % Pattern `pat`: Catches an operator if it's surrounded by non-whitespace characters,
+                    % with optional existing spaces.
+                    % (\S): Captures a non-whitespace character (token before operator).
+                    % \s*: Matches zero or more whitespace characters.
+                    % $1, $2: Backreferences to the captured non-whitespace characters.
                     pat = ['(\S)\s*', escaped_op, '\s*(\S)']; 
-                    rep = ['$1 ', op, ' $2'];
+                    rep = ['$1 ', op, ' $2']; % Replaces with: token1<space>operator<space>token2
                     processedCodePart = regexprep(processedCodePart, pat, rep);
                 end
 
-                % Special handling for binary + and -
-                % Pattern: operand1_suffix space(s) +/- space(s) operand2_prefix
-                % Operand1_suffix: word character, ), ], or ' (transpose)
-                % Operand2_prefix: word character, (, [, or . (dot for struct/method or start of element-wise op)
-                s1 = '(\w|\)|\]|\'')'; % Capture group 1: char before operator
-                s2 = '(\w|\(|\[|\.)'; % Capture group 3: char after operator
-                pat_binary_plus_minus = [s1, '\s*([+\-])\s*', s2]; % Capture group 2: the operator +/-
-                rep_binary_plus_minus = '$1 $2 $3'; % Add single spaces
+                % Special handling for binary + and - operators to distinguish from unary.
+                % `s1`: Captures a valid character that can precede a binary operator (+ or -).
+                %       (word character, or closing bracket/paren, or transpose quote).
+                % `s2`: Captures a valid character that can follow a binary operator.
+                %       (word character, or opening bracket/paren, or dot for properties/element-wise).
+                % `pat_binary_plus_minus`: Matches pattern <char_before><optional_spaces><+/-><optional_spaces><char_after>.
+                s1 = '(\w|\)|\]|\'')'; % Capture group 1: character before operator
+                s2 = '(\w|\(|\[|\.)'; % Capture group 3: character after operator
+                pat_binary_plus_minus = [s1, '\s*([+\-])\s*', s2]; % Capture group 2: the operator + or -
+                rep_binary_plus_minus = '$1 $2 $3'; % Add single spaces around the operator
                 processedCodePart = regexprep(processedCodePart, pat_binary_plus_minus, rep_binary_plus_minus);
                 
-                % Unary plus/minus and scientific notation fixes
-                % Fix 1: Remove space after certain preceding tokens if followed by unary +/-
-                % Preceding tokens: assignment, delimiters, logical short-circuit ops
-                unary_fix_class_1 = '[=\(\[\{,\s&|]'; % Note: removed * / \ ^ < > ~
+                % Unary plus/minus and scientific notation fixes (post-general spacing)
+                % Fix 1: Remove space after specific preceding tokens if followed by unary +/-.
+                % `unary_fix_class_1`: Characters that can precede a unary operator (e.g., '(', '[', '=', etc.).
+                % `pat_unary_fix_1`: Matches <preceding_char><one_or_more_spaces><+/-><operand_char>.
+                % Result: <preceding_char><+/-><operand_char> (removes the unwanted space).
+                unary_fix_class_1 = '[=\(\[\{,\s&|]'; 
                 pat_unary_fix_1 = ['(', unary_fix_class_1, ')\s+([+\-])\s*(\w|[\.\(])'];
                 processedCodePart = regexprep(processedCodePart, pat_unary_fix_1, '$1$2$3');
                 
-                % Fix 2: Remove space if unary +/- is at the beginning of the code part (after any indent)
+                % Fix 2: Remove space if unary +/- is at the beginning of the code part (after indent).
+                % `pat_unary_fix_2`: Matches <start_of_code><+/-><one_or_more_spaces><operand_char>.
                 pat_unary_fix_2 = ['^([+\-])\s+(\w|[\.\(])'];
                 processedCodePart = regexprep(processedCodePart, pat_unary_fix_2, '$1$2');
                 
-                % Fix scientific notation (e.g., 1 e - 5 -> 1e-5)
-                % These should run after general spacing to catch cases like '1e - 5' or '1 e-5'
-                processedCodePart = regexprep(processedCodePart, '(\d)\s*e\s*([+\-])\s*(\d+)', '$1e$2$3', 'ignorecase');
-                processedCodePart = regexprep(processedCodePart, '(\d)\s*e\s*(\d+)', '$1e$2', 'ignorecase'); % For e.g. 1e10 (no sign)
+                % Fix scientific notation (e.g., "1 e - 5" -> "1e-5", or "1e + 5" -> "1e+5").
+                % Handles cases where spaces might have been inserted around 'e'/'E' or the exponent's sign.
+                processedCodePart = regexprep(processedCodePart, '(\d)\s*e\s*([+\-])\s*(\d+)', '$1e$2$3', 'ignorecase'); % e.g. 1e-5 or 1E+10
+                processedCodePart = regexprep(processedCodePart, '(\d)\s*e\s*(\d+)', '$1e$2', 'ignorecase'); % For exponents without explicit sign, e.g. 1e10
             end
 
+            % Space after comma
             if options.SpaceAfterComma
-                processedCodePart = regexprep(processedCodePart, '\s*,\s*', ', ');
-                processedCodePart = regexprep(processedCodePart, ', $', ','); 
+                processedCodePart = regexprep(processedCodePart, '\s*,\s*', ', '); % Ensures one space after comma, removes spaces before.
+                processedCodePart = regexprep(processedCodePart, ', $', ','); % Removes trailing space if comma is at end of code part.
             end
             
-            processedCodePart = regexprep(processedCodePart, ';(\S)', '; $1'); % Space after semicolon separator: [1; 2]
+            % Ensure space after a semicolon if it's used as a separator within a statement (e.g., in matrix definitions like `[1; 2]`)
+            processedCodePart = regexprep(processedCodePart, ';(\S)', '; $1'); 
         end
 
-        % --- Construct the Beautiful Line ---
-        % Conditional formatting to handle cases like "end % comment" vs "code; % comment"
-        if isempty(strtrim(processedCodePart)) && ~isempty(commentPart) % Line was only comment (should be caught earlier)
+        % --- Stage 6: Construct the Beautiful Line ---
+        % Assemble the indented code part and the (optional) comment part.
+        % Handles cases: only comment, code + comment, only code.
+        if isempty(strtrim(processedCodePart)) && ~isempty(commentPart) % Line became comment-only after processing
             tempBeautifulLines{i} = regexprep([currentIndentStr, commentPart], '\s+$', '');
-        elseif ~isempty(strtrim(processedCodePart)) && ~isempty(commentPart)
+        elseif ~isempty(strtrim(processedCodePart)) && ~isempty(commentPart) % Code and comment
             tempBeautifulLines{i} = regexprep([currentIndentStr, strtrim(processedCodePart), commentPart], '\s+$', '');
-        elseif ~isempty(strtrim(processedCodePart))
+        elseif ~isempty(strtrim(processedCodePart)) % Only code
             tempBeautifulLines{i} = regexprep([currentIndentStr, strtrim(processedCodePart)], '\s+$', '');
-        else % Both code and comment are empty after processing (e.g. was just whitespace or became empty)
-            tempBeautifulLines{i} = ''; % Effectively an empty line
+        else % Line became effectively empty (e.g. was just whitespace or processed to empty)
+            tempBeautifulLines{i} = ''; 
         end
         
-        % --- Update IndentLevel for NEXT line ---
-        if options.IndentSize > 0 % Only change indent level if indenting is active
-            if ismember(firstWord, dedentKeywords) % 'end'
+        % --- Stage 7: Update IndentLevel for NEXT line ---
+        if options.IndentSize > 0 % Only adjust indent level if indenting is active (IndentSize > 0)
+            if ismember(firstWord, dedentKeywords) % Keyword is 'end'
                 current_indentLevel_before_dedent = indentLevel;
-                indentLevel = max(0, indentLevel - 1);
+                indentLevel = max(0, indentLevel - 1); % Dedent for the 'end'
                 
-                % If this 'end' keyword is potentially closing a switch block
-                if inSwitchBlockDepth > 0
-                    % This is a simplified model: assumes an 'end' might close the innermost switch.
-                    % A more robust system would use a stack to match 'end' to 'switch'.
-                    % If indentLevel actually decreased and was at a level consistent with switch content
-                    if indentLevel < current_indentLevel_before_dedent 
-                        % This 'end' caused a real dedent. Assume it closes the current switch block context.
+                % Special handling for 'end' closing a 'switch' block.
+                if inSwitchBlockDepth > 0 % Currently inside one or more switch blocks
+                    % This is a simplified model assuming 'end' closes the innermost 'switch'.
+                    % A robust parser would use a stack to match 'end' to 'switch'.
+                    if indentLevel < current_indentLevel_before_dedent % If actual dedent happened
+                        % This 'end' is assumed to close the current switch context.
                         inSwitchBlockDepth = max(0, inSwitchBlockDepth - 1);
-                        if inSwitchBlockDepth == 0
-                            inCaseBody = false; % Exited the outermost switch structure
+                        if inSwitchBlockDepth == 0 % If exited all nested switch blocks
+                            inCaseBody = false; % Reset 'inCaseBody' flag.
                         end
                     end
                 end
-            elseif ismember(firstWord, midBlockKeywords) % 'elseif', 'else', 'catch', 'case', 'otherwise'
+            elseif ismember(firstWord, midBlockKeywords) % Keywords like 'elseif', 'else', 'case'
                 if ismember(firstWord, {'case', 'otherwise'})
-                    % indentLevel for lines after 'case'/'otherwise' does not change here.
-                    % It's already at switch_content_level. Code inside the case
-                    % is handled by the 'inCaseBody' flag causing further indentation
-                    % of currentLineEffectiveIndentLevel.
+                    % `indentLevel` for lines *after* 'case'/'otherwise' does not change here.
+                    % It's already at the switch content level. The content *within* the case
+                    % is handled by `inCaseBody` flag, which causes `currentLineEffectiveIndentLevel`
+                    % to be increased for those content lines.
                 else % 'elseif', 'else', 'catch'
-                    indentLevel = max(0, indentLevel - 1); % Dedent part for the keyword itself
-                    indentLevel = indentLevel + 1;         % Indent part for the content of the block
+                    % These keywords first conceptually "dedent" to the level of the 'if'/'try'
+                    % then "indent" for their own block content. Net effect on `indentLevel` for
+                    % the *next* line is typically no change from the start of their block.
+                    % `currentLineEffectiveIndentLevel` for these keywords themselves was already set.
+                    % The `indentLevel` for the *next* line (content of else/elseif/catch) should be `currentLineEffectiveIndentLevel + 1`.
+                    % This is achieved by: dedent for keyword, then indent for block.
+                    indentLevel = max(0, indentLevel - 1); % Dedent part for the keyword itself.
+                    indentLevel = indentLevel + 1;         % Indent part for the content of the block.
                 end
-            elseif ismember(firstWord, indentKeywords) % 'if', 'for', 'switch', ...
+            elseif ismember(firstWord, indentKeywords) % Keywords like 'if', 'for', 'function', 'switch'
                 if strcmp(firstWord, 'switch')
-                    inSwitchBlockDepth = inSwitchBlockDepth + 1;
+                    inSwitchBlockDepth = inSwitchBlockDepth + 1; % Increment switch nesting depth
                 end
-                indentLevel = indentLevel + 1;
+                indentLevel = indentLevel + 1; % Indent for the block content
             end
         end
-        previousLineEndedWithContinuation = endsWith(strtrim(processedCodePart), '...');
+        previousLineEndedWithContinuation = endsWith(strtrim(processedCodePart), '...'); % Check for line continuation for next iteration
     end
 
     % --- Post Processing: Blank Lines and MinBlankLinesBeforeBlock ---
-    finalOutputLines = cell(1, length(tempBeautifulLines) + options.MinBlankLinesBeforeBlock * length(tempBeautifulLines)); % Overestimate
+    % Refine blank lines based on options.PreserveBlankLines and options.MinBlankLinesBeforeBlock.
+    finalOutputLines = cell(1, length(tempBeautifulLines) + options.MinBlankLinesBeforeBlock * length(tempBeautifulLines)); % Pre-allocate, possibly overestimate
     finalLineCount = 0;
-    lastMeaningfulLineWasBlank = true; % Treat start of file as preceded by blank
+    lastMeaningfulLineWasBlank = true; % True if the last non-empty line added to finalOutputLines was a blank line (or start of file).
 
-    for k = 1:length(tempBeautifulLines)
-        currentLineContent = strtrim(tempBeautifulLines{k});
-        isCurrentLineBlank = isempty(currentLineContent);
+    for k = 1:length(tempBeautifulLines) % Iterate through the initially processed lines
+        currentLineContent = strtrim(tempBeautifulLines{k}); % Get content of current processed line
+        isCurrentLineBlank = isempty(currentLineContent); % Check if it's blank after initial processing
 
-        % MinBlankLinesBeforeBlock logic
-        % Only apply if not at the very start of the file (finalLineCount > 0)
+        % MinBlankLinesBeforeBlock logic: Ensure N blank lines before major block keywords.
+        % Only apply if MinBlankLinesBeforeBlock > 0, current line is not blank, and not at the very start of the file.
         if options.MinBlankLinesBeforeBlock > 0 && ~isCurrentLineBlank && finalLineCount > 0
-            % Check if current line starts a new block
-            [codeP, ~] = extractCodeAndCommentInternal(currentLineContent); % Re-extract, simple
-            firstWordToken = regexp(codeP, ['^\s*(', strjoin(indentKeywords, '|'), ')\b'], 'tokens', 'once');
+            % Check if current line starts a new block (e.g., 'if', 'for', 'function')
+            [codeP_for_blank_check, ~] = extractCodeAndCommentInternal(currentLineContent); % Simple re-extract for keyword check
+            firstWordToken_for_blank_check = regexp(codeP_for_blank_check, ['^\s*(', strjoin(indentKeywords, '|'), ')\b'], 'tokens', 'once');
             
-            if ~isempty(firstWordToken) % It's a block-starting keyword
+            if ~isempty(firstWordToken_for_blank_check) % It's a block-starting keyword
                 blanksNeeded = options.MinBlankLinesBeforeBlock;
-                % Count existing blanks before this line in finalOutputLines
-                % (from last non-blank line in finalOutputLines)
+                % Count existing blank lines immediately preceding this point in `finalOutputLines`.
                 numExistingBlanks = 0;
                 if finalLineCount > 0
-                    for j = finalLineCount:-1:1
+                    for j = finalLineCount:-1:1 % Look backwards from last added line
                         if isempty(strtrim(finalOutputLines{j}))
                             numExistingBlanks = numExistingBlanks + 1;
                         else
@@ -502,6 +613,7 @@ function beautifulCode = code_beautifier(rawCode, varargin)
                     end
                 end
                 
+                % Add missing blank lines.
                 for bl = 1:max(0, blanksNeeded - numExistingBlanks)
                     finalLineCount = finalLineCount + 1;
                     finalOutputLines{finalLineCount} = '';
@@ -511,282 +623,336 @@ function beautifulCode = code_beautifier(rawCode, varargin)
 
         % PreserveBlankLines logic
         if isCurrentLineBlank
-            if options.PreserveBlankLines
-                if ~lastMeaningfulLineWasBlank % Add this blank line
+            if options.PreserveBlankLines % If preserving blank lines
+                if ~lastMeaningfulLineWasBlank % And the last meaningful line wasn't also blank (to collapse multiple to one)
                     finalLineCount = finalLineCount + 1;
-                    finalOutputLines{finalLineCount} = '';
+                    finalOutputLines{finalLineCount} = ''; % Add the blank line
                     lastMeaningfulLineWasBlank = true;
                 end
-                % else: current is blank, previous was also blank, so collapse
+                % else: current is blank, and previous was also blank (or start of file), so collapse/skip.
             else
-                % Do not add blank line if not preserving
+                % Not preserving blank lines, so skip adding this blank line.
             end
         else % Current line is not blank
             finalLineCount = finalLineCount + 1;
-            finalOutputLines{finalLineCount} = tempBeautifulLines{k};
+            finalOutputLines{finalLineCount} = tempBeautifulLines{k}; % Add the contentful line
             lastMeaningfulLineWasBlank = false;
         end
     end
-    beautifulLines = finalOutputLines(1:finalLineCount)';
+    beautifulLines = finalOutputLines(1:finalLineCount)'; % Trim pre-allocated cell array
 
     % --- Optional: Align Assignments ---
+    % If enabled, this step realigns blocks of consecutive assignment statements.
     if options.AlignAssignments && ~isempty(beautifulLines)
         beautifulLines = alignAssignmentBlocksInternal(beautifulLines, options);
     end
 
     % --- Output Formatting ---
+    % Convert the cell array of processed lines back to the requested output format ('char' or 'cell').
     if strcmpi(options.OutputFormat, 'char')
-        beautifulCode = strjoin(beautifulLines, sprintf('\n')); % Use sprintf for cross-platform newline
-    else % 'cell'
-        beautifulCode = beautifulLines;
+        beautifulCode = strjoin(beautifulLines, sprintf('\n')); % Join lines into a single char array with '\n' separators
+    else % 'cell' (default)
+        beautifulCode = beautifulLines; % Return as cell array of strings
     end
 end
 
 % --- Helper function to align assignment blocks ---
+% This function identifies blocks of consecutive assignment statements and aligns their '=' signs.
+% A block is defined by consecutive lines with the same indentation level that are
+% assignable statements. Empty lines or lines with different indentation break the block.
+% Full-line comments with matching indents are considered part of the block but are not aligned.
 function lines = alignAssignmentBlocksInternal(lines, options)
     if isempty(lines), return; end
 
-    blockLinesIndices = [];
-    blockLinesContent = {};
-    blockLinesIndents = {};
-    maxLhsLen = 0;
+    % State variables for tracking the current block of assignments:
+    blockLinesIndices = [];      % Stores original line numbers of lines in the current block.
+    blockLinesContent = {};      % Cell array of structs, each describing a line in the block 
+                                 % (type: 'assignment' or 'comment', content, original index, indent string).
+    blockLinesIndents = {};      % Cell array storing indent strings of actual CODE lines in the block,
+                                 % used to check if subsequent lines belong to the same block.
+    maxLhsLen = 0;               % Maximum length of the Left-Hand Side (LHS) of assignments in the current block.
     
     indentKeywordsPattern = ['^\s*(if|for|while|switch|try|parfor|function|classdef|properties|methods|events|arguments)\b'];
 
-    for i = 1:length(lines)
+    % Helper anonymous function to reset state variables for a new block.
+    resetBlockState = @() deal([], {}, {}, 0); % Returns empty for the four state vars
+
+    for i = 1:length(lines) % Iterate through each line provided to the function
         currentLine = lines{i};
-        trimmedLine = strtrim(currentLine);
+        trimmedLine = strtrim(currentLine); % Current line without leading/trailing whitespace
+        currentIndent = regexp(currentLine, '^\s*', 'match', 'once'); % Get leading whitespace (indentation)
 
-        isAssignable = false;
-        currentIndent = '';
-        lhs = '';
-        rhs = '';
-        comment = '';
-        equalsIndexInCode = -1;
+        % If the line is empty, it breaks any current assignment block.
+        if isempty(trimmedLine)
+            if ~isempty(blockLinesIndices) % If a block was being formed
+                lines = applyAlignmentToBlock(lines, blockLinesContent, maxLhsLen, options); % Apply alignment to it
+            end
+            [blockLinesIndices, blockLinesContent, blockLinesIndents, maxLhsLen] = resetBlockState(); % Reset state
+            continue; % Move to the next line
+        end
 
-        if isempty(trimmedLine) || startsWith(trimmedLine, '%') % Empty or full comment line
-            % Process previous block and reset
-        else
-            currentIndent = regexp(currentLine, '^\s*', 'match', 'once');
-            [codePart, commentPart] = extractCodeAndCommentInternal(trimmedLine); % commentPart includes leading ' %'
-            
-            % Check if it's a keyword line (not typically alignable)
-            isKeywordLine = ~isempty(regexp(codePart, indentKeywordsPattern, 'once'));
+        isFullCommentLine = startsWith(trimmedLine, '%'); % Check if the line is a full-line comment
+        isAssignable = false; % Flag to indicate if the current line is an alignable assignment
+        lhs = ''; rhs = ''; commentPartForAssignment = ''; equalsIndexInCode = -1; % Variables for assignment parts
 
-            if ~isKeywordLine && ~endsWith(strtrim(codePart), '...') % Not a keyword and no line continuation
-                % Find the first '=' that is not part of '==', '~=', '<=', '>=' etc.
-                % This regex finds '=' not preceded/followed by another operator char forming a multi-char operator
-                % It also tries to avoid finding '=' inside string literals by only checking up to first comment char.
-                
-                % Simpler approach: find all '=', then check context.
-                % More robust: use a loop similar to extractCodeAndCommentInternal to find first non-string/non-comment '='
-                
+        % If not a full comment line, try to parse as code.
+        if ~isFullCommentLine
+            [codePart, commentPartExtracted] = extractCodeAndCommentInternal(trimmedLine); % Separate code and trailing comment
+            isKeywordLine = ~isempty(regexp(codePart, indentKeywordsPattern, 'once')); % Check if line starts with a major keyword
+
+            % Consider for assignment alignment if not a keyword line and not ending with line continuation '...'
+            if ~isKeywordLine && ~endsWith(strtrim(codePart), '...')
+                % This section finds the first '=' that is a standalone assignment operator,
+                % not part of '==', '>=', etc., and not within a string literal.
                 tempCodeForEquals = codePart;
-                inSingleQuote = false; inDoubleQuote = false;
-                tempEqualsIndex = -1;
-                for charIdx = 1:length(tempCodeForEquals)
+                inSingleQuote = false; inDoubleQuote = false; % Flags for being inside string literals
+                tempEqualsIndex = -1; % Index of the found assignment '='
+                for charIdx = 1:length(tempCodeForEquals) % Iterate through characters in the code part
                     char = tempCodeForEquals(charIdx);
-                    if char == ''''
-                        if charIdx+1 <= length(tempCodeForEquals) && tempCodeForEquals(charIdx+1) == '''' % Escaped
-                            charIdx = charIdx + 1; % Skip next
-                        elseif ~inDoubleQuote
+                    if char == '''' % Single quote
+                        if charIdx+1 <= length(tempCodeForEquals) && tempCodeForEquals(charIdx+1) == '''' % Escaped single quote ('')
+                            charIdx = charIdx + 1; % Skip next quote character
+                        elseif ~inDoubleQuote % Only toggle if not inside a double-quoted string
                             inSingleQuote = ~inSingleQuote;
                         end
-                    elseif char == '"'
-                         if charIdx+1 <= length(tempCodeForEquals) && tempCodeForEquals(charIdx+1) == '"' % Escaped
-                            charIdx = charIdx + 1; % Skip next
-                         elseif ~inSingleQuote
+                    elseif char == '"' % Double quote
+                         if charIdx+1 <= length(tempCodeForEquals) && tempCodeForEquals(charIdx+1) == '"' % Escaped double quote ("")
+                            charIdx = charIdx + 1; % Skip next quote character
+                         elseif ~inSingleQuote % Only toggle if not inside a single-quoted string
                             inDoubleQuote = ~inDoubleQuote;
                          end
-                    elseif char == '=' && ~inSingleQuote && ~inDoubleQuote
-                        % Check if it's a standalone '='
+                    elseif char == '=' && ~inSingleQuote && ~inDoubleQuote % Found an '=' not in a string
+                        % Check if it's a standalone assignment '=' and not part of '==', '>=', etc.
                         isComparison = false;
-                        if charIdx > 1 && ismember(tempCodeForEquals(charIdx-1), {'=', '~', '<', '>'})
+                        if charIdx > 1 && ismember(tempCodeForEquals(charIdx-1), {'=', '~', '<', '>'}) % Check char before
                             isComparison = true;
                         end
-                        if charIdx < length(tempCodeForEquals) && tempCodeForEquals(charIdx+1) == '='
+                        if charIdx < length(tempCodeForEquals) && tempCodeForEquals(charIdx+1) == '=' % Check char after
                             isComparison = true;
                         end
                         if ~isComparison
-                            tempEqualsIndex = charIdx;
+                            tempEqualsIndex = charIdx; % Store index of valid assignment '='
                             break; 
                         end
                     end
                 end
                 equalsIndexInCode = tempEqualsIndex;
 
-                if equalsIndexInCode > 0
+                if equalsIndexInCode > 0 % If a valid assignment '=' was found
                     isAssignable = true;
-                    lhs = strtrim(codePart(1:equalsIndexInCode-1));
-                    rhs = strtrim(codePart(equalsIndexInCode+1:end));
-                    comment = commentPart; % Already has leading space if exists
+                    lhs = strtrim(codePart(1:equalsIndexInCode-1)); % Extract Left-Hand Side
+                    rhs = strtrim(codePart(equalsIndexInCode+1:end)); % Extract Right-Hand Side
+                    commentPartForAssignment = commentPartExtracted; % Store its trailing comment
                 end
             end
         end
 
+        % Decision Logic: Based on whether the line is assignable, a full comment, or other code.
         if isAssignable
+            % If it's the first line in a potential block OR its indent matches the last CODE line's indent in the current block:
             if isempty(blockLinesIndices) || strcmp(currentIndent, blockLinesIndents{end})
-                % Add to current block
+                blockLinesIndices(end+1) = i; % Add line index to block
+                blockLinesContent{end+1} = struct('type', 'assignment', ... % Store details
+                                                  'lhs', lhs, 'rhs', rhs, ...
+                                                  'comment', commentPartForAssignment, ...
+                                                  'originalIndex', i, 'indentStr', currentIndent);
+                blockLinesIndents{end+1} = currentIndent; % Record indent of this CODE line for the block
+                % Update maximum LHS length for alignment calculation
+                if options.UseTabs % Tab handling for LHS length is approximate
+                    maxLhsLen = max(maxLhsLen, length(lhs));
+                else
+                    maxLhsLen = max(maxLhsLen, length(lhs));
+                end
+            else % Assignable line, but its indent differs from the current block's code lines.
+                if ~isempty(blockLinesIndices) % Process the previously accumulated block.
+                    lines = applyAlignmentToBlock(lines, blockLinesContent, maxLhsLen, options);
+                end
+                [blockLinesIndices, blockLinesContent, blockLinesIndents, maxLhsLen] = resetBlockState(); % Reset for a new block.
+                % Start a new block with the current assignable line.
                 blockLinesIndices(end+1) = i;
-                blockLinesContent{end+1} = struct('lhs', lhs, 'rhs', rhs, 'comment', comment, 'originalIndex', i);
+                blockLinesContent{end+1} = struct('type', 'assignment', ...
+                                                  'lhs', lhs, 'rhs', rhs, ...
+                                                  'comment', commentPartForAssignment, ...
+                                                  'originalIndex', i, 'indentStr', currentIndent);
                 blockLinesIndents{end+1} = currentIndent;
                 if options.UseTabs
-                    % Approximate tab length for alignment; this is imperfect.
-                    % A common convention is 8 spaces per tab for alignment calculations.
-                    % Or, count tabs as 1 char and then adjust spaces.
-                    % For simplicity, just count chars in LHS. True tab alignment is complex.
                     maxLhsLen = max(maxLhsLen, length(lhs));
                 else
                     maxLhsLen = max(maxLhsLen, length(lhs));
                 end
-            else
-                % Indentation changed, process previous block
-                if ~isempty(blockLinesIndices)
-                    lines = applyAlignmentToBlock(lines, blockLinesContent, blockLinesIndents{1}, maxLhsLen, options);
-                end
-                % Start new block
-                blockLinesIndices = [i];
-                blockLinesContent = {struct('lhs', lhs, 'rhs', rhs, 'comment', comment, 'originalIndex', i)};
-                blockLinesIndents = {currentIndent};
-                if options.UseTabs
-                     maxLhsLen = length(lhs);
-                else
-                     maxLhsLen = length(lhs);
-                end
             end
-        else
-            % Not assignable, process previous block and reset
-            if ~isempty(blockLinesIndices)
-                lines = applyAlignmentToBlock(lines, blockLinesContent, blockLinesIndents{1}, maxLhsLen, options);
+        elseif isFullCommentLine
+            % If the line is a full comment:
+            % And a block is active AND the comment's indent matches the block's code line indent:
+            if ~isempty(blockLinesIndices) && strcmp(currentIndent, blockLinesIndents{end})
+                % Add comment to the current block as a 'comment' type. It doesn't break the block.
+                % These comments are preserved but not used for `maxLhsLen` calculation.
+                blockLinesIndices(end+1) = i;
+                blockLinesContent{end+1} = struct('type', 'comment', ...
+                                                  'lineValue', lines{i}, ... % Store original full line content
+                                                  'originalIndex', i, 'indentStr', currentIndent);
+                % Note: Comment lines do not contribute to `blockLinesIndents` or `maxLhsLen`.
+            else % Comment line either has a different indent or there's no active block.
+                if ~isempty(blockLinesIndices) % Process any existing block.
+                    lines = applyAlignmentToBlock(lines, blockLinesContent, maxLhsLen, options);
+                end
+                [blockLinesIndices, blockLinesContent, blockLinesIndents, maxLhsLen] = resetBlockState(); % Reset.
+                % The comment line itself is preserved in `lines{i}` from the main loop's processing.
             end
-            blockLinesIndices = [];
-            blockLinesContent = {};
-            blockLinesIndents = {};
-            maxLhsLen = 0;
+        else % Line is not assignable AND not a full comment (e.g., 'if', 'for', other statements).
+            if ~isempty(blockLinesIndices) % This line breaks any current block. Process it.
+                lines = applyAlignmentToBlock(lines, blockLinesContent, maxLhsLen, options);
+            end
+            [blockLinesIndices, blockLinesContent, blockLinesIndents, maxLhsLen] = resetBlockState(); % Reset.
+            % The current line `lines{i}` is left as is (its formatting handled by main loop).
         end
     end
 
-    % Process any remaining block
+    % After the loop, process any remaining block that was not yet finalized.
     if ~isempty(blockLinesIndices)
-        lines = applyAlignmentToBlock(lines, blockLinesContent, blockLinesIndents{1}, maxLhsLen, options);
+        lines = applyAlignmentToBlock(lines, blockLinesContent, maxLhsLen, options);
     end
 end
 
-function lines = applyAlignmentToBlock(lines, blockContent, blockIndent, maxLhsLen, options)
-    if length(blockContent) < 1, return; end % Don't align single lines by themselves (or make it an option?)
-                                          % For now, let's align even single lines if they form a "block" of 1.
-                                          % The prompt implies consecutive, so >1. Let's stick to >1 for now.
-    if length(blockContent) < 2 && false % Set to true to only align blocks of 2 or more. Currently allows single "blocks".
-        return;
-    end
+% This function applies the actual alignment to a collected block of lines (assignments and comments).
+function lines = applyAlignmentToBlock(lines, blockContent, maxLhsLen, options)
+    if length(blockContent) < 1, return; end % Do nothing for empty blocks.
+    
+    % Optional: Could add a check here to only align if numAssignmentsInBlock >= 2, for example.
+    % numAssignments = 0;
+    % for k_chk = 1:length(blockContent)
+    %     if strcmp(blockContent{k_chk}.type, 'assignment')
+    %         numAssignments = numAssignments + 1;
+    %     end
+    % end
+    % if numAssignments < 1 % Or < 2 for stricter alignment. For now, allows single line "block" to be formatted.
+    %     return; 
+    % end
 
-
-    for k = 1:length(blockContent)
+    for k = 1:length(blockContent) % Iterate through each item (assignment or comment) in the block
         item = blockContent{k};
-        idx = item.originalIndex;
+        idx = item.originalIndex; % Original line number
         
-        numSpacesBeforeEquals = maxLhsLen - length(item.lhs);
-        spacesBeforeEqualsStr = repmat(' ', 1, numSpacesBeforeEquals);
-        
-        if options.SpaceAroundOperators
-            % LHS<spaces_to_align> <space> = <space> RHS <comment>
-            newLine = [blockIndent, item.lhs, spacesBeforeEqualsStr, ' = ', item.rhs, item.comment];
-        else
-            % LHS<spaces_to_align>=RHS <comment>
-            newLine = [blockIndent, item.lhs, spacesBeforeEqualsStr, '=', item.rhs, item.comment];
+        if strcmp(item.type, 'assignment') % Only format assignment lines
+            blockIndent = item.indentStr; % Use the indent stored with this specific assignment line
+            
+            % Calculate number of spaces needed to align this line's '=' with `maxLhsLen`.
+            numSpacesBeforeEquals = maxLhsLen - length(item.lhs);
+            spacesBeforeEqualsStr = repmat(' ', 1, numSpacesBeforeEquals); % String of spaces
+            
+            % Construct the new aligned line.
+            if options.SpaceAroundOperators % Control spacing around '='
+                newLine = [blockIndent, item.lhs, spacesBeforeEqualsStr, ' = ', item.rhs, item.comment];
+            else
+                newLine = [blockIndent, item.lhs, spacesBeforeEqualsStr, '=', item.rhs, item.comment];
+            end
+            lines{idx} = regexprep(newLine, '\s+$', ''); % Update the line in the main `lines` cell array, trim trailing whitespace.
+        elseif strcmp(item.type, 'comment')
+            % Comment lines within the block are preserved as they are.
+            % Their original content (including their own indentation, which should match the block's code)
+            % is already in `lines{idx}` from the main processing loop or from `item.lineValue` if stored.
+            % No reformatting action is needed for 'comment' type items here.
         end
-        lines{idx} = regexprep(newLine, '\s+$', ''); % Trim trailing whitespace
     end
 end
 
 
 % --- Helper function to extract code and comment parts ---
+% This helper robustly separates the code part of a line from its trailing comment.
+% It correctly handles '%' characters that might appear inside single or double quoted string literals
+% by tracking whether the parser is currently inside such a literal using `inSingleQuoteString`
+% and `inDoubleQuoteString` flags.
 function [codeP, commentP] = extractCodeAndCommentInternal(lineStr)
-    % This helper robustly separates the code part of a line from its trailing comment,
-    % correctly handling '%' characters that might appear inside single or double quoted string literals.
-    
-    trimmedLine = strtrim(lineStr);
-    codeP = trimmedLine; 
-    commentP = '';
+    trimmedLine = strtrim(lineStr); % Remove leading/trailing whitespace from the raw line
+    codeP = trimmedLine; % Initialize code part as the whole trimmed line
+    commentP = ''; % Initialize comment part as empty
     
     len = length(trimmedLine);
-    actualCommentStartIdx = -1;
+    actualCommentStartIdx = -1; % Will store the index where the actual comment symbol '%' is found
     
-    inSingleQuoteString = false;
+    % Flags to track if currently inside a string literal
+    inSingleQuoteString = false; 
     inDoubleQuoteString = false;
     
     i = 1;
-    while i <= len
+    while i <= len % Iterate through each character of the trimmed line
         char = trimmedLine(i);
         
-        if char == '''' % Single quote
-            if ~inDoubleQuoteString % Only process if not in a double-quoted string
-                if i+1 <= len && trimmedLine(i+1) == '''' % Escaped single quote ''
-                    i = i + 1; % Skip next quote
+        if char == '''' % Encountered a single quote
+            if ~inDoubleQuoteString % Only process if not currently inside a double-quoted string
+                if i+1 <= len && trimmedLine(i+1) == '''' % Check for an escaped single quote (e.g., 'it''s')
+                    i = i + 1; % Skip the next quote, as it's part of the literal
                 else
-                    inSingleQuoteString = ~inSingleQuoteString;
+                    inSingleQuoteString = ~inSingleQuoteString; % Toggle state: enter/exit single-quoted string
                 end
             end
-        elseif char == '"' % Double quote
-            if ~inSingleQuoteString % Only process if not in a single-quoted string
-                if i+1 <= len && trimmedLine(i+1) == '"' % Escaped double quote ""
-                    i = i + 1; % Skip next quote
+        elseif char == '"' % Encountered a double quote
+            if ~inSingleQuoteString % Only process if not currently inside a single-quoted string
+                if i+1 <= len && trimmedLine(i+1) == '"' % Check for an escaped double quote (e.g., "say ""hello""") (less common in MATLAB for this)
+                    i = i + 1; % Skip the next quote
                 else
-                    inDoubleQuoteString = ~inDoubleQuoteString;
+                    inDoubleQuoteString = ~inDoubleQuoteString; % Toggle state: enter/exit double-quoted string
                 end
             end
-        elseif char == '%'
-            if ~inSingleQuoteString && ~inDoubleQuoteString
-                actualCommentStartIdx = i;
-                break; % Found the actual comment start
+        elseif char == '%' % Encountered a percent sign
+            if ~inSingleQuoteString && ~inDoubleQuoteString % If NOT inside any string literal
+                actualCommentStartIdx = i; % This is the start of the actual comment
+                break; % Stop searching, comment found
             end
+            % If inside a string, this '%' is part of the string, not a comment starter.
         end
         i = i + 1;
     end
 
-    if actualCommentStartIdx ~= -1
-        if actualCommentStartIdx == 1 % Line starts with comment (e.g., "% comment")
-            codeP = ''; 
-            commentP = trimmedLine; % The whole trimmed line is the comment
+    if actualCommentStartIdx ~= -1 % If a valid comment starting '%' was found
+        if actualCommentStartIdx == 1 % If the comment starts at the beginning of the trimmed line
+            codeP = ''; % No code part
+            commentP = trimmedLine; % The entire trimmed line is the comment
         else
+            % The code part is everything before the comment's '%'
             codeP = strtrim(trimmedLine(1:actualCommentStartIdx-1));
+            % The comment part starts from '%' and includes its content.
+            % Standardize to have a space after '%' if there's content.
             commentContent = strtrim(trimmedLine(actualCommentStartIdx+1:end));
-            if isempty(commentContent) && actualCommentStartIdx == len % trailing % like "code %"
-                 commentP = '%'; % Just a '%' symbol as comment
-            elseif isempty(commentContent) % trailing % with space like "code % "
-                 commentP = ' %';
+            if isempty(commentContent) && actualCommentStartIdx == len % Trailing '%' like "code %"
+                 commentP = '%'; % Just the '%' symbol
+            elseif isempty(commentContent) % Trailing '%' with space like "code % "
+                 commentP = ' %'; % Standardize to '% '
             else
                 commentP = [' % ', commentContent]; % Standardize to " % content"
             end
         end
-    % else: no comment found, or '%' is inside a string. codeP remains the whole trimmedLine.
+    % else: no comment found (or '%' was only inside strings). 
+    % `codeP` remains the whole `trimmedLine`, `commentP` remains empty.
     end
 end
 
 % --- Validation function for StylePreset ---
+% Validates the 'StylePreset' option name.
 function validateStylePreset(presetName)
+    % Check type: must be char or scalar string.
     if ~(ischar(presetName) || (isstring(presetName) && isscalar(presetName)))
-        % This error should ideally be caught by inputParser's own type checks if we define type more strictly.
-        % However, this custom validation also handles it.
-        ME = MException('code_beautifier:InvalidStylePresetType', 'StylePreset must be a character vector or a scalar string.');
-        throwAsCaller(ME); % Throw as if the main function threw it for better stack trace
+        ME = MException('code_beautifier:InvalidStylePresetType', ...
+                        'StylePreset must be a character vector or a scalar string.');
+        throwAsCaller(ME); % Throw error as if from the main function for better user context.
     end
-    presetName = char(presetName); % Convert to char for easier handling
+    presetName = char(presetName); % Convert to char for consistent comparison.
 
-    if isempty(presetName)
-        return; % Empty string is valid (no preset chosen)
+    if isempty(presetName) % An empty preset name means no preset is applied (use defaults).
+        return; 
     end
     
-    validPresetNames = {'Default', 'MathWorksStyle', 'CompactStyle'};
+    % Define valid preset names (case-insensitive check, but canonical names are used internally).
+    validPresetNames = {'Default', 'MathWorksStyle', 'CompactStyle'}; 
     isActuallyValid = false;
     for i = 1:length(validPresetNames)
-        if strcmpi(presetName, validPresetNames{i})
+        if strcmpi(presetName, validPresetNames{i}) % Case-insensitive comparison
             isActuallyValid = true;
             break;
         end
     end
 
-    if ~isActuallyValid
+    if ~isActuallyValid % If the provided name is not in the list of valid presets.
         ME = MException('code_beautifier:InvalidStylePreset', ...
                         'Unknown StylePreset: "%s". Valid presets are ''Default'', ''MathWorksStyle'', ''CompactStyle''. Use an empty string for no preset.', presetName);
         throwAsCaller(ME);
@@ -794,48 +960,54 @@ function validateStylePreset(presetName)
 end
 
 % --- Helper function to get known option types and validators ---
+% This function returns a struct containing information about known options,
+% primarily used for parsing the .mbeautifyrc config file.
 function knownInfo = getKnownOptionsInfo(defaultSettings)
-    knownInfo = struct();
-    optionNames = fieldnames(defaultSettings);
+    knownInfo = struct(); % Initialize struct to store info about each known option
+    optionNames = fieldnames(defaultSettings); % Get names of all default options
     for i = 1:length(optionNames)
         optName = optionNames{i};
-        value = defaultSettings.(optName);
+        value = defaultSettings.(optName); % Get default value to infer type
+        % Determine type and specific validators if needed
         if islogical(value)
             knownInfo.(optName).type = 'logical';
         elseif isnumeric(value)
             knownInfo.(optName).type = 'numeric';
+            % Add specific validators for numeric options with restricted ranges/types
             if strcmp(optName, 'MinBlankLinesBeforeBlock')
                 knownInfo.(optName).validator = @(x) isnumeric(x) && isscalar(x) && x >= 0 && x <= 2 && floor(x) == x;
-                knownInfo.(optName).range = [0, 2]; % For error messages
+                knownInfo.(optName).range = [0, 2]; % For constructing error messages
             elseif any(strcmp(optName, {'IndentSize', 'ContinuationIndentOffset'}))
-                knownInfo.(optName).validator = @(x) isnumeric(x) && isscalar(x) && x >= 0 && floor(x) == x;
-            else % For other numerics if any, basic check
-                knownInfo.(optName).validator = @(x) isnumeric(x) && isscalar(x);
+                knownInfo.(optName).validator = @(x) isnumeric(x) && isscalar(x) && x >= 0 && floor(x) == x; % Must be non-negative integer
+            else 
+                knownInfo.(optName).validator = @(x) isnumeric(x) && isscalar(x); % Basic numeric check
             end
-        elseif ischar(value) || isstring(value)
+        elseif ischar(value) || isstring(value) % String options
             knownInfo.(optName).type = 'string';
             if strcmp(optName, 'OutputFormat')
                 knownInfo.(optName).validator = @(x) (ischar(x) || (isstring(x) && isscalar(x))) && ismember(lower(char(x)), {'cell', 'char'});
                 knownInfo.(optName).allowed = {'cell', 'char'}; % For error messages
-            elseif strcmp(optName, 'StylePreset') % StylePreset itself can be in config
-                knownInfo.(optName).validator = @validateStylePresetConfig; % Slightly different validation for config context
+            elseif strcmp(optName, 'StylePreset') % StylePreset option itself can be in config
+                knownInfo.(optName).validator = @validateStylePresetConfig; % Use a slightly different validator for config context
             end
         end
     end
 end
 
+% Validation for 'StylePreset' when read from a config file.
+% Differs from `validateStylePreset` as it throws errors directly for `parseConfigFile` to catch.
 function validateStylePresetConfig(presetName)
-    % Validation for StylePreset when read from config file (allows empty or valid name)
     if ~(ischar(presetName) || (isstring(presetName) && isscalar(presetName)))
-        ME = MException('code_beautifier:InvalidStylePresetTypeInConfigFile', 'StylePreset in config file must be a string.');
-        throw(ME); % Throw directly, parseConfigFile will catch and warn
+        ME = MException('code_beautifier:InvalidStylePresetTypeInConfigFile', ...
+                        'StylePreset in config file must be a string.');
+        throw(ME); % Throw directly; parseConfigFile will catch and issue a warning.
     end
     presetNameStr = char(presetName);
-    if isempty(presetNameStr)
-        return; % Empty is fine
+    if isempty(presetNameStr) % Empty is allowed (means no preset from config)
+        return; 
     end
-    validPresets = {'Default', 'MathWorksStyle', 'CompactStyle'};
-    if ~ismember(lower(presetNameStr), lower(validPresets))
+    validPresets = {'Default', 'MathWorksStyle', 'CompactStyle'}; % Valid preset names
+    if ~ismember(lower(presetNameStr), lower(validPresets)) % Case-insensitive check
         ME = MException('code_beautifier:InvalidStylePresetInConfigFile', ...
                         'Unknown StylePreset "%s" in config file. Valid are ''Default'', ''MathWorksStyle'', ''CompactStyle''.', presetNameStr);
         throw(ME);
@@ -844,105 +1016,116 @@ end
 
 
 % --- Helper function to parse .mbeautifyrc config file ---
+% Parses the .mbeautifyrc file for beautifier options.
 function parsedOptions = parseConfigFile(filePath, knownInfo)
-    parsedOptions = struct();
+    parsedOptions = struct(); % Initialize struct to hold options found in the file.
     try
-        fid = fopen(filePath, 'rt');
-        if fid == -1
-            warning('code_beautifier:ConfigFileNotFound', 'Configuration file .mbeautifyrc not found or cannot be opened.');
+        fid = fopen(filePath, 'rt'); % Open file in text read mode.
+        if fid == -1 % If file cannot be opened (e.g., doesn't exist, permissions).
+            warning('code_beautifier:ConfigFileNotFound', ...
+                    'Configuration file .mbeautifyrc not found or cannot be opened.');
             return;
         end
-        C = onCleanup(@() fclose(fid)); % Ensure file is closed
+        C = onCleanup(@() fclose(fid)); % Ensure file is closed when function exits or errors.
         
         lineNumber = 0;
-        while ~feof(fid)
+        while ~feof(fid) % Read file line by line.
             lineNumber = lineNumber + 1;
-            line = strtrim(fgetl(fid));
+            line = strtrim(fgetl(fid)); % Get line and remove leading/trailing whitespace.
             
+            % Skip empty lines and lines starting with '#' (comments).
             if isempty(line) || startsWith(line, '#')
-                continue; % Skip empty lines and comments
+                continue;
             end
             
+            % Parse "key = value" pairs. Regex captures key and value.
+            % It allows for spaces around '=' and trims spaces from key/value.
+            % It also ignores anything after a '#' on the value side (trailing comment).
             parts = regexp(line, '^\s*([^#=\s]+)\s*=\s*([^#]+?)\s*$', 'tokens');
-            if isempty(parts)
+            if isempty(parts) % If line doesn't match "key = value" format.
                 warning('code_beautifier:InvalidLineInConfigFile', ...
                         'Skipping invalid line %d in .mbeautifyrc: "%s". Line must be in "key = value" format.', lineNumber, line);
                 continue;
             end
             
-            key = strtrim(parts{1}{1});
-            valueStr = strtrim(parts{1}{2});
+            key = strtrim(parts{1}{1}); % Extracted key.
+            valueStr = strtrim(parts{1}{2}); % Extracted value as a string.
             
-            % Find canonical key name (case-insensitive match)
+            % Find the canonical option name (case-insensitive matching against known option names).
+            % `canonicalKey` will be the version of the key as defined in `stylePresets` (e.g., 'IndentSize').
             canonicalKey = '';
             knownOptionNames = fieldnames(knownInfo);
             for k_idx = 1:length(knownOptionNames)
-                if strcmpi(key, knownOptionNames{k_idx})
+                if strcmpi(key, knownOptionNames{k_idx}) % Case-insensitive comparison
                     canonicalKey = knownOptionNames{k_idx};
                     break;
                 end
             end
             
-            if isempty(canonicalKey)
+            if isempty(canonicalKey) % If the key is not a known option.
                 warning('code_beautifier:UnknownConfigFileOption', ...
                         'Skipping unknown option "%s" on line %d in .mbeautifyrc.', key, lineNumber);
                 continue;
             end
             
-            info = knownInfo.(canonicalKey);
+            % Convert the string value (`valueStr`) to its appropriate data type based on `knownInfo`.
+            info = knownInfo.(canonicalKey); % Get type and validator info for this option.
             try
-                switch info.type
+                parsedValue = [];
+                switch info.type % Determine type for conversion
                     case 'logical'
                         if strcmpi(valueStr, 'true')
                             parsedValue = true;
                         elseif strcmpi(valueStr, 'false')
                             parsedValue = false;
                         else
-                            error('Value must be "true" or "false" (case-insensitive).');
+                            error('Value must be "true" or "false" (case-insensitive).'); % Error for invalid logical string
                         end
                     case 'numeric'
-                        parsedValue = str2double(valueStr);
-                        if isnan(parsedValue)
+                        parsedValue = str2double(valueStr); % Convert string to double
+                        if isnan(parsedValue) % Check if conversion failed
                             error('Invalid numeric value: "%s".', valueStr);
                         end
+                        % Validate numeric value against specific constraints if a validator exists
                         if isfield(info, 'validator') && ~info.validator(parsedValue)
-                            if isfield(info, 'range')
+                            if isfield(info, 'range') % Provide range in error if available
                                 error('Numeric value %g is out of allowed range [%g, %g] or not a valid integer.', parsedValue, info.range(1), info.range(2));
                             else
                                 error('Numeric value %g is not valid for option "%s".', parsedValue, canonicalKey);
                             end
                         end
                     case 'string'
-                        parsedValue = valueStr; % Already a string
-                        if strcmp(canonicalKey, 'StylePreset') % Special handling for StylePreset string
+                        parsedValue = valueStr; % Value is already a string.
+                        % Validate string value if a specific validator or allowed list exists.
+                        if strcmp(canonicalKey, 'StylePreset') % Special handling for StylePreset string in config
                            validateStylePresetConfig(parsedValue); % Use the config-specific validator
-                           % Ensure canonical casing for preset names if matched
+                           % Ensure canonical casing for preset names if matched from config
                             validPresetNamesInner = {'Default', 'MathWorksStyle', 'CompactStyle'};
                             for vpi = 1:length(validPresetNamesInner)
                                 if strcmpi(parsedValue, validPresetNamesInner{vpi})
-                                    parsedValue = validPresetNamesInner{vpi};
+                                    parsedValue = validPresetNamesInner{vpi}; % Use canonical casing
                                     break;
                                 end
                             end
                         elseif isfield(info, 'validator') && ~info.validator(parsedValue)
-                             if isfield(info, 'allowed')
+                             if isfield(info, 'allowed') % Provide allowed values in error if available
                                 error('String value "%s" is not one of the allowed values: %s.', parsedValue, strjoin(info.allowed, ', '));
                             else
                                 error('String value "%s" is not valid for option "%s".', parsedValue, canonicalKey);
                             end
                         end
-                    otherwise
-                        warning('code_beautifier:InternalParserError', 'Internal error: Unknown type "%s" for option "%s". Skipping.', info.type, canonicalKey);
+                    otherwise % Should not happen if knownInfo is correctly populated.
+                        warning('code_beautifier:InternalParserError', ...
+                                'Internal error: Unknown type "%s" for option "%s". Skipping.', info.type, canonicalKey);
                         continue;
                 end
-                parsedOptions.(canonicalKey) = parsedValue;
-            catch ME
+                parsedOptions.(canonicalKey) = parsedValue; % Store the parsed and validated option.
+            catch ME % Catch errors during parsing/validation of a single option's value.
                 warning('code_beautifier:InvalidValueInConfigFile', ...
                         'Skipping option "%s" on line %d in .mbeautifyrc due to invalid value: %s (%s)', ...
                         canonicalKey, lineNumber, valueStr, ME.message);
             end
         end
-    catch ME_file
+    catch ME_file % Catch errors related to file operations (e.g., opening the file).
         warning('code_beautifier:ErrorReadingConfigFile', 'Error reading .mbeautifyrc: %s', ME_file.message);
     end
-end

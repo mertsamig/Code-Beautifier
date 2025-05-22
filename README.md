@@ -196,7 +196,8 @@ Further examples can be found in the main help text of the `code_beautifier.m` f
 
 ## Known Limitations / Important Notes
 
-*   The beautifier is based on regular expressions and heuristics, not a full MATLAB parser. It may not perfectly format all code, especially highly complex, heavily nested, or unusually styled syntax.
+*   The beautifier is based on regular expressions and heuristics, not a full MATLAB parser. While it aims for accuracy with common MATLAB syntax, it may not perfectly format all code, especially highly complex, heavily nested, or unusually styled constructs. Syntactically incorrect MATLAB code may also lead to unexpected formatting.
+*   Performance might be a consideration for extremely large code files (e.g., tens of thousands of lines) due to line-by-line processing.
 *   It's **highly recommended to use version control** (like Git) and review the changes made by the beautifier, especially when applying it to critical code or legacy projects.
 *   The `AddSemicolonsToStatements` option is experimental and can significantly alter script output behavior by suppressing it. Use with caution and review its effects thoroughly.
 *   Formatting of comments within code lines, especially complex trailing comments, aims for preservation but might have edge cases.
@@ -213,9 +214,18 @@ To run the tests:
 % disp(results);
 ```
 
+## Bug Reporting
+
+If you encounter any issues or find a case where the beautifier does not format code as expected, please report it. When reporting a bug, include:
+    - A minimal, reproducible example of the input code that causes the issue.
+    - The beautifier options you were using (or if you were using a `.mbeautifyrc` file).
+    - The actual output you received.
+    - The output you expected.
+This information will help in diagnosing and fixing the problem. (If this project is managed on a platform like GitHub, please open an issue in the project's issue tracker.)
+
 ## License
 
-This project is currently provided without a formal license. Users are free to use and modify the code at their own risk. Consider adding a standard open-source license like MIT or Apache 2.0 if distributing further.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
 ## Contributing
 
