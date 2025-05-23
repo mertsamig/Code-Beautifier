@@ -3,7 +3,8 @@ function beautifulCode = code_beautifier(rawCode, varargin)
 %
 %   beautifulCode = code_beautifier(rawCode)
 %   Formats the input MATLAB code (string, cell array of strings, or string array)
-%   using default settings.
+%   using default settings. If `rawCode` is a string representing a path to an
+%   existing `.m` file, the content of that file will be read and processed.
 %
 %   Optional Name-Value Pair Arguments:
 %   'StylePreset':              String, applies a predefined set of styling options.
@@ -36,6 +37,11 @@ function beautifulCode = code_beautifier(rawCode, varargin)
 %   'AddSemicolonsToStatements':Logical, true to add semicolons to non-assignment
 %                               function calls/expressions. (Use with caution).
 %                               (e.g., from 'Default' preset: false).
+%   'AlignAssignments':         Logical, true to align assignment statements within blocks
+%                               of consecutive assignments. Default: false.
+%   'FormatArgumentsBlock':     Logical, true to format 'arguments' blocks by aligning
+%                               names, types, validation functions, and default values.
+%                               Default: false.
 %   'OutputFormat':             String, 'cell' (default) or 'char'. Defines output type.
 %
 % Example:
@@ -52,13 +58,43 @@ function beautifulCode = code_beautifier(rawCode, varargin)
 %   customCompactCode = code_beautifier(code, 'StylePreset', 'CompactStyle', 'IndentSize', 4);
 %   disp(strjoin(customCompactCode, sprintf('\n')));
 %
-%   filePath = 'myScript.m'; % Path to an existing .m file
-%   rawText = fileread(filePath);
-%   formattedText = code_beautifier(rawText, 'OutputFormat', 'char', 'StylePreset', 'MathWorksStyle');
-%   % To save back (BE CAREFUL - BACKUP YOUR ORIGINAL):
-%   % fidOut = fopen('myScript_beautified.m', 'w');
-%   % fprintf(fidOut, '%s', formattedText); % Note: no \n needed if formattedText has them
+% Example (File Input - assuming 'myScriptToFormat.m' exists):
+%   % Create a dummy file for example:
+%   % fid = fopen('myScriptToFormat.m', 'w');
+%   % fprintf(fid, 'function test(arg1,arg2)\narguments\narg1 string="hello"\narg2 (1,1) double {mustBePositive}=10\nend\ndisp(arg1)\nend');
+%   % fclose(fid);
+%   formattedFromFile = code_beautifier('myScriptToFormat.m', 'FormatArgumentsBlock', true, 'OutputFormat', 'char');
+%   disp(formattedFromFile);
+%   % To save back to a new file (if output is 'char'):
+%   % fidOut = fopen('myScriptFormatted.m', 'w');
+%   % fprintf(fidOut, '%s', formattedFromFile);
 %   % fclose(fidOut);
+%   % delete('myScriptToFormat.m'); % Clean up dummy file
+%
+% Example (FormatArgumentsBlock):
+%   argCode = {'arguments', '  firstArg string = "test"', '  secondArgument (1,1) double {mustBePositive} = 10', 'end'};
+%   formattedArgs = code_beautifier(argCode, 'FormatArgumentsBlock', true, 'IndentSize', 2, 'OutputFormat', 'cell');
+%   disp(strjoin(formattedArgs, sprintf('\n')));
+
+    % --- Handle File Path Input for rawCode ---
+    % This section checks if the primary input `rawCode` is a character string or
+    % a scalar string that represents a path to an existing MATLAB file ('.m' extension).
+    % If it is, the content of that file is read and used as the `rawCode` for beautification.
+    % Otherwise, `rawCode` is treated as the direct code content (string, cell array, etc.).
+    % Check if rawCode might be a file path
+    if (ischar(rawCode) || (isstring(rawCode) && isscalar(rawCode)))
+        inputPath = char(rawCode); % Convert to char for file operations
+        % Check if it's an existing file and ends with .m
+        if exist(inputPath, 'file') == 2 && endsWith(lower(inputPath), '.m')
+            try
+                rawCode = fileread(inputPath); % Read content from file
+            catch ME
+                error('code_beautifier:FileReadError', 'Failed to read input file "%s": %s', inputPath, ME.message);
+            end
+            % If it was a file path but not .m or not found, rawCode remains as is,
+            % and will be treated as code content by the parser.
+        end
+    end
 
     % --- Style Presets Definition ---
     stylePresets = struct();
@@ -72,7 +108,8 @@ function beautifulCode = code_beautifier(rawCode, varargin)
         'MinBlankLinesBeforeBlock', 0, ...
         'RemoveRedundantSemicolons', true, ...
         'AddSemicolonsToStatements', false, ...
-        'AlignAssignments', false ...
+        'AlignAssignments', false, ...
+        'FormatArgumentsBlock', false ...
     );
     stylePresets.MathWorksStyle = struct(...
         'IndentSize', 4, ...
@@ -84,7 +121,8 @@ function beautifulCode = code_beautifier(rawCode, varargin)
         'MinBlankLinesBeforeBlock', 1, ...
         'RemoveRedundantSemicolons', true, ...
         'AddSemicolonsToStatements', false, ...
-        'AlignAssignments', false ...
+        'AlignAssignments', false, ...
+        'FormatArgumentsBlock', false ...
     );
     stylePresets.CompactStyle = struct(...
         'IndentSize', 2, ...
@@ -96,7 +134,8 @@ function beautifulCode = code_beautifier(rawCode, varargin)
         'MinBlankLinesBeforeBlock', 0, ...
         'RemoveRedundantSemicolons', true, ...
         'AddSemicolonsToStatements', false, ...
-        'AlignAssignments', false ...
+        'AlignAssignments', false, ...
+        'FormatArgumentsBlock', false ...
     );
 
     % --- Determine Effective Defaults (Precedence: Function Defaults -> Config File -> Preset -> Direct Args) ---
@@ -235,6 +274,7 @@ function beautifulCode = code_beautifier(rawCode, varargin)
     addParameter(p, 'RemoveRedundantSemicolons', effectiveDefaults.RemoveRedundantSemicolons, @(x) islogical(x) && isscalar(x));
     addParameter(p, 'AddSemicolonsToStatements', effectiveDefaults.AddSemicolonsToStatements, @(x) islogical(x) && isscalar(x));
     addParameter(p, 'AlignAssignments', effectiveDefaults.AlignAssignments, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'FormatArgumentsBlock', effectiveDefaults.FormatArgumentsBlock, @(x) islogical(x) && isscalar(x));
     addParameter(p, 'OutputFormat', effectiveDefaults.OutputFormat, @(x) (ischar(x) || (isstring(x) && isscalar(x))) && ismember(lower(char(x)), {'cell', 'char'}));
 
     % 4. Parse Direct Arguments (varargin). These arguments have the highest precedence.
@@ -653,6 +693,240 @@ function beautifulCode = code_beautifier(rawCode, varargin)
         beautifulCode = strjoin(beautifulLines, sprintf('\n')); % Join lines into a single char array with '\n' separators
     else % 'cell' (default)
         beautifulCode = beautifulLines; % Return as cell array of strings
+    end
+end
+
+% --- Helper function to format 'arguments' blocks ---
+function formattedBlockLines = formatArgumentsBlockInternal(blockLines, options, indentChar, indentUnit)
+    % formatArgumentsBlockInternal Parses and formats lines within an 'arguments' block for alignment.
+    %
+    % Syntax:
+    %   formattedBlockLines = formatArgumentsBlockInternal(blockLines, options, indentChar, indentUnit)
+    %
+    % Inputs:
+    %   blockLines: Cell array of strings. Each cell contains one line from the
+    %               'arguments' block (excluding the 'arguments' and 'end' lines themselves).
+    %   options:    Struct containing the beautifier options (e.g., SpaceAroundOperators).
+    %   indentChar: Character string used for a single indentation unit (e.g., '    ' or '\t').
+    %               This is not directly used for indenting the whole block here, as lines
+    %               are expected to have their base indent already. It could be used for
+    %               internal relative indenting if needed in future enhancements.
+    %   indentUnit: Scalar, number of `indentChar` repetitions for one standard indent level.
+    %               Similar to `indentChar`, primarily for context if deeper logic is added.
+    %
+    % Outputs:
+    %   formattedBlockLines: Cell array of strings, representing the formatted lines
+    %                        of the 'arguments' block, ready to replace the original
+    %                        lines in the main beautifier output.
+    %
+    % Description:
+    %   This function takes the raw lines from an 'arguments' block and attempts to align
+    %   the argument names, size/class specifications, validation functions (in curly braces),
+    %   and default values.
+    %   - It parses each line to identify these components.
+    %   - Full-line comments and empty lines are preserved with their original indentation.
+    %   - Trailing comments on argument definition lines are preserved.
+    %   - It calculates the maximum width for each component (name, size/class, validators)
+    %     across all relevant lines in the block.
+    %   - Lines are then reconstructed with padding to align these components vertically.
+    %   - Spacing around the '=' for default values is controlled by `options.SpaceAroundOperators`.
+
+    if isempty(blockLines)
+        formattedBlockLines = {};
+        return;
+    end
+
+    parsedArgs = struct('name', {}, 'sizeClass', {}, 'validators', {}, ...
+                        'defaultValue', {}, 'comment', {}, 'originalLine', {}, ...
+                        'isCommentOnly', {}, 'indentStr', {});
+    
+    % Regex patterns
+    % Arg Name: captures simple names or dot-notation names (e.g., options.Value)
+    namePattern = '^\s*([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)';
+    % Size/Class: captures optional parens like (1,:) and then a type like char, string, customType
+    % It is non-greedy for the content within parentheses.
+    sizeClassPattern = '\s*((?:\([^\)]*?\))?\s*[a-zA-Z_]\w*)'; 
+    % Validators: captures content within curly braces {}
+    validatorsPattern = '\s*(\{[^\}]*\})';
+    % Default Value: captures everything after an equals sign
+    defaultValuePattern = '\s*=\s*(.+)'; % greedy for the rest
+
+    for i = 1:length(blockLines)
+        line = blockLines{i};
+        parsedArgs(i).originalLine = line;
+        parsedArgs(i).isCommentOnly = false;
+
+        leadingWhitespace = regexp(line, '^\s*', 'match', 'once');
+        parsedArgs(i).indentStr = leadingWhitespace;
+        
+        trimmedLine = strtrim(line);
+
+        % Preserve empty lines as they are, just storing their original indent.
+        if isempty(trimmedLine) 
+            parsedArgs(i).name = ''; % Mark as not a typical arg line, ensures it's skipped in width calculation
+            parsedArgs(i).comment = ''; % Effectively a blank line
+            % Other fields like sizeClass, validators, defaultValue remain empty.
+            continue; 
+        end
+
+        % Preserve full-line comments, storing the entire line (including its original indent via commentPart).
+        if startsWith(trimmedLine, '%')
+            parsedArgs(i).isCommentOnly = true;
+            parsedArgs(i).comment = trimmedLine; % Store the whole line as comment
+            % other fields remain empty
+            continue;
+        end
+
+        % Extract comment part first
+        [codePart, commentPart] = extractCodeAndCommentInternal(trimmedLine); % Use existing helper
+        parsedArgs(i).comment = commentPart;
+        
+        currentCode = codePart; % This is the code part of the line, excluding any trailing comment.
+        
+        % Parsing order: Name, then Size/Class, then Validators, then Default Value.
+        % This order is chosen to minimize ambiguity, as default values can be complex.
+
+        % 1. Extract Argument Name
+        nameMatch = regexp(currentCode, namePattern, 'tokens', 'once');
+        if ~isempty(nameMatch)
+            parsedArgs(i).name = strtrim(nameMatch{1});
+            % Update currentCode to exclude the matched name part for subsequent parsing.
+            currentCode = currentCode(length(nameMatch{1})+1:end); 
+        else
+            parsedArgs(i).name = ''; % Should ideally not happen for a valid argument line.
+        end
+        currentCode = strtrim(currentCode); % Trim for next parsing step.
+
+        % 2. Extract Size and Class Specification (e.g., (1,:) char, string)
+        % This pattern is anchored to the beginning of the remaining currentCode.
+        sizeClassMatch = regexp(currentCode, ['^', sizeClassPattern], 'tokens', 'once');
+        if ~isempty(sizeClassMatch)
+            parsedArgs(i).sizeClass = strtrim(sizeClassMatch{1});
+            % Update currentCode: remove the matched size/class part.
+            % regexprep is used for safe removal based on the matched string.
+            currentCode = regexprep(currentCode, ['^', regexptranslate('escape', parsedArgs(i).sizeClass)], '', 'once');
+        else
+            parsedArgs(i).sizeClass = '';
+        end
+        currentCode = strtrim(currentCode);
+        
+        % 3. Extract Validation Functions (e.g., {mustBeNumeric, mustBePositive})
+        % Anchored to the beginning of the remaining currentCode.
+        validatorsMatch = regexp(currentCode, ['^', validatorsPattern], 'tokens', 'once');
+         if ~isempty(validatorsMatch)
+            parsedArgs(i).validators = strtrim(validatorsMatch{1});
+            % Update currentCode: remove the matched validators part.
+            currentCode = regexprep(currentCode, ['^', regexptranslate('escape', parsedArgs(i).validators)], '', 'once');
+        else
+            parsedArgs(i).validators = '';
+        end
+        currentCode = strtrim(currentCode);
+
+        % 4. Extract Default Value (e.g., = "default", = 10)
+        % This should be what's left, starting with an '='.
+        if startsWith(currentCode, '=') % Check if the remainder starts with '='
+            defaultMatch = regexp(currentCode, defaultValuePattern, 'tokens', 'once');
+            if ~isempty(defaultMatch)
+                parsedArgs(i).defaultValue = strtrim(defaultMatch{1});
+            else
+                 % Handle cases like "name =" (empty default)
+                if strcmp(strtrim(currentCode), '=')
+                    parsedArgs(i).defaultValue = ''; % Explicit empty default
+                else
+                    parsedArgs(i).defaultValue = ''; % Or treat as no default
+                end
+            end
+        else
+            parsedArgs(i).defaultValue = ''; % No default value part
+        end
+    end
+
+    % Determine maximum widths for alignment
+    maxNameLen = 0;
+    maxSizeClassLen = 0;
+    maxValidatorsLen = 0;
+
+    for i = 1:length(parsedArgs)
+        if parsedArgs(i).isCommentOnly || isempty(parsedArgs(i).name) % Skip comment-only or blank lines
+            continue;
+        end
+        maxNameLen = max(maxNameLen, length(parsedArgs(i).name));
+        if ~isempty(parsedArgs(i).sizeClass)
+            maxSizeClassLen = max(maxSizeClassLen, length(parsedArgs(i).sizeClass));
+        end
+        if ~isempty(parsedArgs(i).validators)
+            maxValidatorsLen = max(maxValidatorsLen, length(parsedArgs(i).validators));
+        end
+    end
+
+    % Reconstruct lines
+    formattedBlockLines = cell(size(blockLines));
+    for i = 1:length(parsedArgs)
+        if parsedArgs(i).isCommentOnly
+            formattedBlockLines{i} = [parsedArgs(i).indentStr, parsedArgs(i).comment];
+            continue;
+        end
+        % If it's an empty line (original line was only whitespace, or became so),
+        % its .name will be empty, and .comment will be empty.
+        if isempty(parsedArgs(i).name) && isempty(parsedArgs(i).comment) 
+            formattedBlockLines{i} = parsedArgs(i).indentStr; % Preserve original indent (becomes an empty line)
+            continue;
+        end
+
+        % Start reconstructing the line with its original indent.
+        lineParts = {};
+        lineParts{end+1} = parsedArgs(i).indentStr;
+        
+        % Name part
+        nameStr = parsedArgs(i).name;
+        namePadding = maxNameLen - length(nameStr);
+        lineParts{end+1} = [nameStr, repmat(' ', 1, namePadding)];
+
+        % Size/Class part
+        if ~isempty(parsedArgs(i).sizeClass)
+            sizeClassStr = parsedArgs(i).sizeClass;
+            sizeClassPadding = maxSizeClassLen - length(sizeClassStr);
+            lineParts{end+1} = [' ', sizeClassStr, repmat(' ', 1, sizeClassPadding)];
+        elseif maxSizeClassLen > 0 % Need to pad if other lines have size/class
+            lineParts{end+1} = repmat(' ', 1, maxSizeClassLen + 1); % +1 for leading space
+        end
+
+        % Validators part
+        if ~isempty(parsedArgs(i).validators)
+            validatorsStr = parsedArgs(i).validators;
+            validatorsPadding = maxValidatorsLen - length(validatorsStr);
+            lineParts{end+1} = [' ', validatorsStr, repmat(' ', 1, validatorsPadding)];
+        elseif maxValidatorsLen > 0 % Need to pad if other lines have validators
+             lineParts{end+1} = repmat(' ', 1, maxValidatorsLen + 1); % +1 for leading space
+        end
+        
+        % Default value part
+        if ~isempty(parsedArgs(i).defaultValue) || (~isempty(parsedArgs(i).name) && any(strcmp(parsedArgs(i).originalLine, strtrim(parsedArgs(i).name)))) % if default is explicitly set or it's just a name (like options.myOpt)
+            defaultStr = parsedArgs(i).defaultValue;
+            if options.SpaceAroundOperators
+                lineParts{end+1} = [' = ', defaultStr];
+            else
+                lineParts{end+1} = ['=', defaultStr];
+            end
+        end
+        
+        fullLine = strjoin(lineParts, '');
+        % Remove trailing spaces from the code part before appending a comment.
+        if ~all(isspace(fullLine)) % Avoid processing if fullLine is only whitespace (e.g. just indent)
+            fullLine = regexprep(fullLine, '\s+$', '');
+        end
+
+        % Append the original comment part.
+        % extractCodeAndCommentInternal standardizes comments to start with ' % ...' or be '%'
+        if ~isempty(parsedArgs(i).comment)
+            if ~isempty(strtrim(fullLine)) % If there's actual code content before comment
+                 fullLine = [fullLine, parsedArgs(i).comment]; % comment already has its leading space
+            else % Line was effectively only indent, so comment directly follows indent
+                 fullLine = [fullLine, strtrim(parsedArgs(i).comment)]; % Avoid double space if comment already leads with one
+            end
+        end
+        
+        formattedBlockLines{i} = fullLine; % Store the fully reconstructed line.
     end
 end
 
