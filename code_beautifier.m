@@ -2,9 +2,12 @@ function beautifulCode = code_beautifier(rawCode, varargin)
 % code_beautifier Formats MATLAB code for better readability.
 %
 %   beautifulCode = code_beautifier(rawCode)
-%   Formats the input MATLAB code (string, cell array of strings, or string array)
-%   using default settings. If `rawCode` is a string representing a path to an
-%   existing `.m` file, the content of that file will be read and processed.
+%   Formats the input MATLAB code. `rawCode` can be:
+%     - A string, cell array of strings, or string array containing the code.
+%     - A string representing a path to an existing `.m` file (its content will be read).
+%     - The string 'activeEditor' (case-insensitive) to process the
+%       script currently active in the MATLAB editor.
+%   Formatting uses default settings unless overridden by Name-Value pairs.
 %
 %   Optional Name-Value Pair Arguments:
 %   'StylePreset':              String, applies a predefined set of styling options.
@@ -42,7 +45,7 @@ function beautifulCode = code_beautifier(rawCode, varargin)
 %   'FormatArgumentsBlock':     Logical, true to format 'arguments' blocks by aligning
 %                               names, types, validation functions, and default values.
 %                               Default: false.
-%   'OutputFormat':             String, 'cell' (default) or 'char'. Defines output type.
+%   'OutputFormat':             String, 'char' (default) or 'cell'. Defines output type.
 %
 % Example:
 %   code = {'function y=myfunc(x);if x > 0;;y=x*2+1;else;y=0;end;disp(y);end;'};
@@ -75,14 +78,52 @@ function beautifulCode = code_beautifier(rawCode, varargin)
 %   argCode = {'arguments', '  firstArg string = "test"', '  secondArgument (1,1) double {mustBePositive} = 10', 'end'};
 %   formattedArgs = code_beautifier(argCode, 'FormatArgumentsBlock', true, 'IndentSize', 2, 'OutputFormat', 'cell');
 %   disp(strjoin(formattedArgs, sprintf('\n')));
+%
+% Example (Active Editor):
+%   % To format the currently active script in the MATLAB editor:
+%   % formattedCode = code_beautifier('activeEditor');
+%   %
+%   % This will return the formatted code as a character array (default output).
+%   % To display it in the command window, you can use:
+%   % disp(formattedCode);
+%   %
+%   % To replace the content of the active editor with the formatted code:
+%   % % activeDoc = matlab.desktop.editor.getActive();
+%   % % if ~isempty(activeDoc)
+%   % %   activeDoc.Text = formattedCode;
+%   % %   disp('Active editor content has been updated with formatted code.');
+%   % % else
+%   % %   disp('No active editor found to update.');
+%   % % end
+%   % Note: Modifying editor content directly should be done with caution.
 
+    % --- Handle 'activeEditor' Input ---
+    % This section checks if rawCode is 'activeEditor', and if so, attempts
+    % to get the code from the currently active MATLAB editor window.
+    if (ischar(rawCode) || (isstring(rawCode) && isscalar(rawCode))) && strcmpi(char(rawCode), 'activeEditor')
+        try
+            editorDoc = matlab.desktop.editor.getActive();
+            if isempty(editorDoc)
+                error('code_beautifier:NoActiveEditor', 'No active editor document found. Please open a script or select an editor window.');
+            end
+            activeCodeText = editorDoc.Text;
+            if isempty(strtrim(activeCodeText))
+                error('code_beautifier:ActiveEditorEmpty', 'The active editor document is empty or contains only whitespace.');
+            end
+            rawCode = activeCodeText; % Replace 'activeEditor' with actual code
+        catch ME
+            % Rethrow caught errors. This handles cases where matlab.desktop.editor might not be available
+            % or other unexpected issues during editor interaction.
+            rethrow(ME);
+        end
     % --- Handle File Path Input for rawCode ---
+    % This 'elseif' ensures this block is skipped if 'activeEditor' was processed.
     % This section checks if the primary input `rawCode` is a character string or
     % a scalar string that represents a path to an existing MATLAB file ('.m' extension).
     % If it is, the content of that file is read and used as the `rawCode` for beautification.
     % Otherwise, `rawCode` is treated as the direct code content (string, cell array, etc.).
     % Check if rawCode might be a file path
-    if (ischar(rawCode) || (isstring(rawCode) && isscalar(rawCode)))
+    elseif (ischar(rawCode) || (isstring(rawCode) && isscalar(rawCode))) % Changed from if to elseif
         inputPath = char(rawCode); % Convert to char for file operations
         % Check if it's an existing file and ends with .m
         if exist(inputPath, 'file') == 2 && endsWith(lower(inputPath), '.m')
@@ -109,7 +150,8 @@ function beautifulCode = code_beautifier(rawCode, varargin)
         'RemoveRedundantSemicolons', true, ...
         'AddSemicolonsToStatements', false, ...
         'AlignAssignments', false, ...
-        'FormatArgumentsBlock', false ...
+        'FormatArgumentsBlock', false, ...
+        'OutputFormat', 'char' ... % Set default OutputFormat to 'char'
     );
     stylePresets.MathWorksStyle = struct(...
         'IndentSize', 4, ...
@@ -275,6 +317,8 @@ function beautifulCode = code_beautifier(rawCode, varargin)
     addParameter(p, 'AddSemicolonsToStatements', effectiveDefaults.AddSemicolonsToStatements, @(x) islogical(x) && isscalar(x));
     addParameter(p, 'AlignAssignments', effectiveDefaults.AlignAssignments, @(x) islogical(x) && isscalar(x));
     addParameter(p, 'FormatArgumentsBlock', effectiveDefaults.FormatArgumentsBlock, @(x) islogical(x) && isscalar(x));
+    % Ensure OutputFormat is in effectiveDefaults before inputParser setup if it wasn't already from a preset or config.
+    % This is now guaranteed because stylePresets.Default includes OutputFormat.
     addParameter(p, 'OutputFormat', effectiveDefaults.OutputFormat, @(x) (ischar(x) || (isstring(x) && isscalar(x))) && ismember(lower(char(x)), {'cell', 'char'}));
 
     % 4. Parse Direct Arguments (varargin). These arguments have the highest precedence.
