@@ -1,0 +1,59 @@
+# Default .mbeautifyrc configuration file for code_beautifier.m
+#
+# This file provides the default settings that correspond to the 'Default'
+# style preset within the code_beautifier function.
+# You can modify these values to customize the beautifier's behavior
+# when run from a directory containing this file.
+#
+# Lines starting with '#' are comments and are ignored.
+# Options are specified as: OptionName = Value
+
+# StylePreset: Defines a base set of styling options.
+# Using 'Default' here means these individual settings below reflect that preset.
+# If you change individual settings below, they will override the 'Default' preset's
+# values for those specific options if this file is used.
+# An empty string or omitting this line would also effectively use the internal defaults.
+StylePreset = Default
+
+# IndentSize: Number of spaces for one indent level.
+IndentSize = 4
+
+# UseTabs: True to use tabs for indentation, false to use spaces.
+UseTabs = true
+
+# SpaceAroundOperators: True to add spaces around binary operators (e.g., a = b, c + d).
+SpaceAroundOperators = true
+
+# SpaceAfterComma: True to add a space after commas.
+SpaceAfterComma = true
+
+# ContinuationIndentOffset: Additional indent levels for lines continued with '...'.
+# (e.g., 1 means one additional indent level).
+ContinuationIndentOffset = 1
+
+# PreserveBlankLines: True to keep single blank lines and collapse multiple blanks to one.
+# False to remove most blank lines.
+PreserveBlankLines = true
+
+# MinBlankLinesBeforeBlock: Ensures N blank lines before major block keywords
+# (e.g., if, for, function). Value can be 0, 1, or 2. (0 to disable).
+MinBlankLinesBeforeBlock = 1
+
+# RemoveRedundantSemicolons: True to remove ';;' or semicolons after 'end'.
+RemoveRedundantSemicolons = true
+
+# AddSemicolonsToStatements: True to add semicolons to non-assignment function
+# calls/expressions to suppress output. (Use with caution).
+AddSemicolonsToStatements = false
+
+# AlignAssignments: True to align assignment statements within blocks
+# of consecutive assignments.
+AlignAssignments = true
+
+# FormatArgumentsBlock: True to format 'arguments' blocks by aligning
+# names, types, validation functions, and default values.
+FormatArgumentsBlock = true
+
+# OutputFormat: Defines the output type of the beautified code.
+# Can be 'char' (default, a single character array) or 'cell' (a cell array of strings).
+OutputFormat = char
