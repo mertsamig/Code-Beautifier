@@ -8,6 +8,10 @@ classdef test_code_beautifier < matlab.unittest.TestCase
             rawCode = { ...
                 'function y=myfunc(x);if x > 0;;y=x*2+1;else;y=0;end;disp(y);end;' ...
             };
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = { ...
                 'function y = myfunc(x)', ...
                 '    if x > 0;', ...
@@ -22,16 +26,20 @@ classdef test_code_beautifier < matlab.unittest.TestCase
             % SpaceAfterComma=true, ContinuationIndentOffset=1, PreserveBlankLines=true,
             % MinBlankLinesBeforeBlock=0, RemoveRedundantSemicolons=true, AddSemicolonsToStatements=false
             % OutputFormat is now 'char' by default. This test was for 'cell'.
-            actualCode = code_beautifier(rawCode, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'Default formatting failed when OutputFormat explicitly cell.');
         end
 
         % --- Test New Default Output Format ---
         function testDefaultOutputFormatIsChar(testCase)
             rawCode = {'a=1;','b=2;'};
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             % Expected with default IndentSize=4, SpaceAroundOperators=true, OutputFormat='char'
             expectedCode_char = sprintf('    a = 1;\n    b = 2;'); 
-            actualCode = code_beautifier(rawCode); % Call with default OutputFormat
+            actualCode = code_beautifier(); % Call with default OutputFormat
             testCase.verifyClass(actualCode, 'char', 'Default OutputFormat did not return char.');
             testCase.verifyEqual(actualCode, expectedCode_char, 'Default OutputFormat (char) content mismatch.');
         end
@@ -41,88 +49,128 @@ classdef test_code_beautifier < matlab.unittest.TestCase
         % IndentSize
         function testIndentSizeTwo(testCase)
             rawCode = {'if true;disp(1);end'};
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = { ...
                 'if true', ...
                 '  disp(1);', ...
                 'end' ...
             };
-            actualCode = code_beautifier(rawCode, 'IndentSize', 2, 'SpaceAroundOperators', false, 'RemoveRedundantSemicolons', false, 'AddSemicolonsToStatements', true, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('IndentSize', 2, 'SpaceAroundOperators', false, 'RemoveRedundantSemicolons', false, 'AddSemicolonsToStatements', true, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'IndentSize=2 failed.');
         end
 
         function testIndentSizeZero(testCase) % No indentation, only structure
             rawCode = {'if true;disp(1);end'};
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = { ...
                 'if true', ...
                 'disp(1);', ...
                 'end' ...
             };
-            actualCode = code_beautifier(rawCode, 'IndentSize', 0, 'SpaceAroundOperators', false, 'RemoveRedundantSemicolons', false, 'AddSemicolonsToStatements', true, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('IndentSize', 0, 'SpaceAroundOperators', false, 'RemoveRedundantSemicolons', false, 'AddSemicolonsToStatements', true, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'IndentSize=0 failed.');
         end
 
         % UseTabs
         function testUseTabsTrue(testCase)
             rawCode = {'if true;disp(1);end'};
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = { ...
                 'if true', ...
                 [sprintf('\t') 'disp(1);'], ... % Tab character
                 'end' ...
             };
             % Note: SpaceAroundOperators etc. are kept false to isolate UseTabs effect primarily on indent leading chars
-            actualCode = code_beautifier(rawCode, 'UseTabs', true, 'IndentSize', 1, 'SpaceAroundOperators', false, 'RemoveRedundantSemicolons', false, 'AddSemicolonsToStatements', true, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('UseTabs', true, 'IndentSize', 1, 'SpaceAroundOperators', false, 'RemoveRedundantSemicolons', false, 'AddSemicolonsToStatements', true, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'UseTabs=true failed.');
         end
 
         % SpaceAroundOperators (selected cases)
         function testSpaceAroundOperatorsBasic(testCase)
             rawCode = {'a=b+c; x=y*z; r=s/t; p=q^r;'};
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = {'a = b + c; x = y * z; r = s / t; p = q ^ r;'};
-            actualCode = code_beautifier(rawCode, 'SpaceAroundOperators', true, 'IndentSize', 0, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('SpaceAroundOperators', true, 'IndentSize', 0, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'SpaceAroundOperators basic arithmetic failed.');
         end
 
         function testSpaceAroundOperatorsComparisonLogical(testCase)
             rawCode = {'if a==b&&c~=d; x=1; elseif e<=f||g>h; y=2; end'};
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = {'if a == b && c ~= d; x = 1; elseif e <= f || g > h; y = 2; end'};
-            actualCode = code_beautifier(rawCode, 'SpaceAroundOperators', true, 'IndentSize', 0, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('SpaceAroundOperators', true, 'IndentSize', 0, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'SpaceAroundOperators comparison/logical failed.');
         end
         
         function testSpaceAroundOperatorsElementWise(testCase)
             rawCode = {'M = A.*B - C./D + E.^F;'};
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = {'M = A .* B - C ./ D + E .^ F;'};
-            actualCode = code_beautifier(rawCode, 'SpaceAroundOperators', true, 'IndentSize', 0, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('SpaceAroundOperators', true, 'IndentSize', 0, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'SpaceAroundOperators element-wise failed.');
         end
 
         function testNoSpaceAroundOperators(testCase)
             rawCode = {'a = b + c;'};
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = {'a=b+c;'};
-            actualCode = code_beautifier(rawCode, 'SpaceAroundOperators', false, 'IndentSize', 0, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('SpaceAroundOperators', false, 'IndentSize', 0, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'SpaceAroundOperators=false failed.');
         end
         
         function testSpaceAroundOperatorsWithUnary(testCase)
             rawCode = {'x=-5; y=x*-1; z=obj.val+-10; arr(1)=-idx;'};
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             % Expected based on current logic for SpaceAroundOperators and its unary fixes
             expectedCode = {'x = -5; y = x * -1; z = obj.val + -10; arr(1) = -idx;'};
-            actualCode = code_beautifier(rawCode, 'SpaceAroundOperators', true, 'IndentSize', 0, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('SpaceAroundOperators', true, 'IndentSize', 0, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'SpaceAroundOperators with unary operators failed.');
         end
 
         % SpaceAfterComma
         function testSpaceAfterCommaBasic(testCase)
             rawCode = {'myFunc(a,b,c); M=[1,2;3,4];'};
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = {'myFunc(a, b, c); M=[1, 2;3, 4];'}; % Semicolon in matrix is not affected by SpaceAfterComma
-            actualCode = code_beautifier(rawCode, 'SpaceAfterComma', true, 'IndentSize', 0, 'SpaceAroundOperators',false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('SpaceAfterComma', true, 'IndentSize', 0, 'SpaceAroundOperators',false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'SpaceAfterComma=true failed.');
         end
 
         function testNoSpaceAfterComma(testCase)
             rawCode = {'myFunc(a, b, c); M=[1, 2; 3, 4];'};
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = {'myFunc(a,b,c); M=[1,2;3,4];'};
-            actualCode = code_beautifier(rawCode, 'SpaceAfterComma', false, 'IndentSize', 0, 'SpaceAroundOperators',false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('SpaceAfterComma', false, 'IndentSize', 0, 'SpaceAroundOperators',false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'SpaceAfterComma=false failed.');
         end
 
@@ -132,12 +180,16 @@ classdef test_code_beautifier < matlab.unittest.TestCase
                 'longName = myfunction(arg1, ...', ...
                 'arg2, arg3);' ...
             };
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = { ...
                 'longName = myfunction(arg1, ...', ...
                 '    arg2, arg3);' ... % Default IndentSize=4, ContinuationOffset=1 -> total 4+4=8 spaces if base was 0
             };
             % Test with IndentSize 0 to isolate continuation offset effect
-            actualCode = code_beautifier(rawCode, 'IndentSize', 4, 'SpaceAroundOperators', false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('IndentSize', 4, 'SpaceAroundOperators', false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'ContinuationIndentOffset default failed.');
         end
 
@@ -148,13 +200,17 @@ classdef test_code_beautifier < matlab.unittest.TestCase
                 '  secondPart - thirdPart;', ...
                 'end' ...
             };
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = { ...
                 'if true', ...
                 '  result = firstPart + ...', ... % IndentSize=2
                 '      secondPart - thirdPart;', ... % IndentSize=2, ContOffset=1*IndentSize=2 -> total 2+2=4
                 'end' ...
             };
-            actualCode = code_beautifier(rawCode, 'IndentSize', 2, 'ContinuationIndentOffset', 1, 'SpaceAroundOperators', false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('IndentSize', 2, 'ContinuationIndentOffset', 1, 'SpaceAroundOperators', false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'ContinuationIndentOffset custom failed.');
         end
         
@@ -165,13 +221,17 @@ classdef test_code_beautifier < matlab.unittest.TestCase
                 '  secondPart - thirdPart;', ...
                 'end' ...
             };
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = { ...
                 'if true', ...
                 '  result = firstPart + ...', ... % IndentSize=2
                 '  secondPart - thirdPart;', ... % IndentSize=2, ContOffset=0 -> total 2
                 'end' ...
             };
-            actualCode = code_beautifier(rawCode, 'IndentSize', 2, 'ContinuationIndentOffset', 0, 'SpaceAroundOperators', false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('IndentSize', 2, 'ContinuationIndentOffset', 0, 'SpaceAroundOperators', false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'ContinuationIndentOffset zero failed.');
         end
 
@@ -187,6 +247,10 @@ classdef test_code_beautifier < matlab.unittest.TestCase
                 '', ...
                 'line3;' ...
             };
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = { ...
                 'line1;', ...
                 '', ... % Preserved
@@ -194,7 +258,7 @@ classdef test_code_beautifier < matlab.unittest.TestCase
                 '', ... % Collapsed to one
                 'line3;' ...
             };
-            actualCode = code_beautifier(rawCode, 'PreserveBlankLines', true, 'IndentSize', 0, 'SpaceAroundOperators',false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('PreserveBlankLines', true, 'IndentSize', 0, 'SpaceAroundOperators',false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'PreserveBlankLines=true failed.');
         end
 
@@ -207,12 +271,16 @@ classdef test_code_beautifier < matlab.unittest.TestCase
                 '', ...
                 'line3;' ...
             };
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = { ... % Most blank lines removed
                 'line1;', ...
                 'line2;', ...
                 'line3;' ...
             };
-            actualCode = code_beautifier(rawCode, 'PreserveBlankLines', false, 'IndentSize', 0, 'SpaceAroundOperators',false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('PreserveBlankLines', false, 'IndentSize', 0, 'SpaceAroundOperators',false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'PreserveBlankLines=false failed.');
         end
 
@@ -227,6 +295,10 @@ classdef test_code_beautifier < matlab.unittest.TestCase
                 'disp(2);', ...
                 'end' ...
             };
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCodeWithPreserve = { ...
                 'line1;', ...
                 '', % Added by MinBlankLinesBeforeBlock
@@ -250,28 +322,40 @@ classdef test_code_beautifier < matlab.unittest.TestCase
                 '    disp(2);', ...
                 'end' ...
             };
-            actualCode = code_beautifier(rawCode, 'MinBlankLinesBeforeBlock', 1, 'PreserveBlankLines', true, 'IndentSize',4,'SpaceAroundOperators',false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('MinBlankLinesBeforeBlock', 1, 'PreserveBlankLines', true, 'IndentSize',4,'SpaceAroundOperators',false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCodeWithPreserve, 'MinBlankLinesBeforeBlock=1 with PreserveBlankLines=true failed.');
             
-            actualCodeNoPreserve = code_beautifier(rawCode, 'MinBlankLinesBeforeBlock', 1, 'PreserveBlankLines', false, 'IndentSize',4,'SpaceAroundOperators',false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
+            % For the second call, we need to reset the active editor with the same rawCode
+            if iscell(rawCode); rawCodeString2 = strjoin(rawCode, sprintf('\n')); else; rawCodeString2 = rawCode; end
+            doc2 = matlab.desktop.editor.newDocument(rawCodeString2);
+            testCase.addTeardown(@() doc2.closeNoPrompt());
+            pause(0.5);
+            actualCodeNoPreserve = code_beautifier('MinBlankLinesBeforeBlock', 1, 'PreserveBlankLines', false, 'IndentSize',4,'SpaceAroundOperators',false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCodeNoPreserve, expectedCodeNoPreserve, 'MinBlankLinesBeforeBlock=1 with PreserveBlankLines=false failed.');
         end
 
         function testMinBlankLinesBeforeBlockTwoNoExisting(testCase)
             rawCode = {'if true', 'disp(1);', 'end'};
-            expectedCode = { ...
-                '', % Added
-                '', % Added
-                'if true', ...
-                '    disp(1);', ...
-                'end' ...
-            };
-            % Test with MinBlankLinesBeforeBlock=2, and block is at start of file (after potential blanks)
-            % The logic should prevent adding blanks at the very start of the file (fileLinecount > 0 check)
-            % So, if 'if true' is the first actual content line, it shouldn't get blanks before it.
-            % Let's test with a preceding line.
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            % This rawCode is for the original test logic, which expected prepended blanks.
+            % The new logic for active editor means the file content starts directly.
+            % The test should use rawCodePreceded as the primary input for active editor.
+            
+            % Original expectedCode for rawCode (no preceding line):
+            % expectedCode = { ...
+            % '', % Added
+            % '', % Added
+            % 'if true', ...
+            % '    disp(1);', ...
+            % 'end' ...
+            % };
+            
             rawCodePreceded = {'firstLine;', 'if true', 'disp(1);', 'end'};
-             expectedCodePreceded = { ...
+            if iscell(rawCodePreceded); rawCodeStringPreceded = strjoin(rawCodePreceded, sprintf('\n')); else; rawCodeStringPreceded = rawCodePreceded; end
+            doc = matlab.desktop.editor.newDocument(rawCodeStringPreceded);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
+            expectedCodePreceded = { ...
                 'firstLine;', ...
                 '', % Added
                 '', % Added
@@ -279,18 +363,22 @@ classdef test_code_beautifier < matlab.unittest.TestCase
                 '    disp(1);', ...
                 'end' ...
             };
-            actualCode = code_beautifier(rawCodePreceded, 'MinBlankLinesBeforeBlock', 2, 'PreserveBlankLines', false, 'IndentSize',4,'SpaceAroundOperators',false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('MinBlankLinesBeforeBlock', 2, 'PreserveBlankLines', false, 'IndentSize',4,'SpaceAroundOperators',false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCodePreceded, 'MinBlankLinesBeforeBlock=2 with no existing blanks failed.');
         end
         
         function testMinBlankLinesBeforeBlockAtStartOfFile(testCase)
             rawCode = {'if true', 'disp(1);', 'end'};
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = { ... % No blanks added at absolute start of file
                 'if true', ...
                 '    disp(1);', ...
                 'end' ...
             };
-            actualCode = code_beautifier(rawCode, 'MinBlankLinesBeforeBlock', 1, 'PreserveBlankLines', false, 'IndentSize',4,'SpaceAroundOperators',false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('MinBlankLinesBeforeBlock', 1, 'PreserveBlankLines', false, 'IndentSize',4,'SpaceAroundOperators',false, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'MinBlankLinesBeforeBlock at start of file failed.');
         end
 
@@ -298,22 +386,34 @@ classdef test_code_beautifier < matlab.unittest.TestCase
         % RemoveRedundantSemicolons
         function testRemoveRedundantSemicolonsTrue(testCase)
             rawCode = {'a=1;; b=2; c=3;;;; end;'}; % also tests end;
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = {'a=1; b=2; c=3; end'};
-            actualCode = code_beautifier(rawCode, 'RemoveRedundantSemicolons', true, 'IndentSize',0,'SpaceAroundOperators',false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('RemoveRedundantSemicolons', true, 'IndentSize',0,'SpaceAroundOperators',false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'RemoveRedundantSemicolons=true failed.');
         end
 
         function testRemoveRedundantSemicolonsFalse(testCase)
             rawCode = {'a=1;; b=2; c=3;;;; end;'};
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = {'a=1;; b=2; c=3;;;; end;'};
-            actualCode = code_beautifier(rawCode, 'RemoveRedundantSemicolons', false, 'IndentSize',0,'SpaceAroundOperators',false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('RemoveRedundantSemicolons', false, 'IndentSize',0,'SpaceAroundOperators',false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'RemoveRedundantSemicolons=false failed.');
         end
         
         function testRemoveRedundantSemicolonsEndFunction(testCase)
             rawCode = {'function myFunc(); disp(1);end;'};
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = {'function myFunc(); disp(1);end'}; % end; for function should not remove semicolon from end
-            actualCode = code_beautifier(rawCode, 'RemoveRedundantSemicolons', true, 'IndentSize',0,'SpaceAroundOperators',false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('RemoveRedundantSemicolons', true, 'IndentSize',0,'SpaceAroundOperators',false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'RemoveRedundantSemicolons end; for function failed.');
         end
 
@@ -329,6 +429,10 @@ classdef test_code_beautifier < matlab.unittest.TestCase
                 'end', ...
                 '1+2' ...           % Simple expression, should add
             };
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = { ...
                 'disp("hello");', ...
                 'myVar', ...
@@ -339,7 +443,7 @@ classdef test_code_beautifier < matlab.unittest.TestCase
                 '1+2;' ...
             };
             % Note: AddSemicolonsToStatements is independent of RemoveRedundantSemicolons
-            actualCode = code_beautifier(rawCode, 'AddSemicolonsToStatements', true, 'IndentSize',0,'SpaceAroundOperators',true, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('AddSemicolonsToStatements', true, 'IndentSize',0,'SpaceAroundOperators',true, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'AddSemicolonsToStatements=true failed.');
         end
 
@@ -350,36 +454,52 @@ classdef test_code_beautifier < matlab.unittest.TestCase
                 'a = b + c', ...
                 'plot(x,y)' ...
             };
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = { ... % Output suppressed by default beautifier options if not an assignment
                 'disp("hello")', ...
                 'myVar', ...
                 'a = b + c', ...
                 'plot(x,y)' ...
             };
-            actualCode = code_beautifier(rawCode, 'AddSemicolonsToStatements', false, 'IndentSize',0,'SpaceAroundOperators',true, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('AddSemicolonsToStatements', false, 'IndentSize',0,'SpaceAroundOperators',true, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'AddSemicolonsToStatements=false failed.');
         end
         
         function testAddSemicolonsHoldOn(testCase)
             rawCode = {'hold on'};
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = {'hold on;'};
-            actualCode = code_beautifier(rawCode, 'AddSemicolonsToStatements', true, 'IndentSize',0,'SpaceAroundOperators',false, 'RemoveRedundantSemicolons',false, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('AddSemicolonsToStatements', true, 'IndentSize',0,'SpaceAroundOperators',false, 'RemoveRedundantSemicolons',false, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'AddSemicolonsToStatements for "hold on" failed.');
         end
 
         % OutputFormat
         function testOutputFormatChar(testCase)
             rawCode = {'a=1;','b=2;'};
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode_char = sprintf('a=1;\nb=2;'); % IndentSize=0, SpaceAroundOperators=false
-            actualCode = code_beautifier(rawCode, 'OutputFormat', 'char', 'IndentSize',0,'SpaceAroundOperators',false,'RemoveRedundantSemicolons',false);
+            actualCode = code_beautifier('OutputFormat', 'char', 'IndentSize',0,'SpaceAroundOperators',false,'RemoveRedundantSemicolons',false);
             testCase.verifyEqual(actualCode, expectedCode_char, 'OutputFormat=char failed.');
             testCase.verifyClass(actualCode, 'char', 'OutputFormat=char did not return char.');
         end
 
         function testOutputFormatCell(testCase)
             rawCode = {'a=1;','b=2;'};
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode_cell = {'a=1;','b=2;'};
-            actualCode = code_beautifier(rawCode, 'OutputFormat', 'cell', 'IndentSize',0,'SpaceAroundOperators',false,'RemoveRedundantSemicolons',false);
+            actualCode = code_beautifier('OutputFormat', 'cell', 'IndentSize',0,'SpaceAroundOperators',false,'RemoveRedundantSemicolons',false);
             testCase.verifyEqual(actualCode, expectedCode_cell, 'OutputFormat=cell failed.');
             testCase.verifyClass(actualCode, 'cell', 'OutputFormat=cell did not return cell.');
         end
@@ -397,6 +517,10 @@ classdef test_code_beautifier < matlab.unittest.TestCase
                 'disp(total);', ...
                 'end %% End function myFun' ...
             };
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = { ...
                 'function myFun(list, limit)', ...
                 '% This is a test function', ...
@@ -411,7 +535,7 @@ classdef test_code_beautifier < matlab.unittest.TestCase
             };
              % Default: IndentSize=4, SpaceAroundOperators=true, SpaceAfterComma=true, RemoveRedundantSemicolons=true
             % AddSemicolonsToStatements=false. OutputFormat explicitly cell.
-            actualCode = code_beautifier(rawCode, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'Standard style combination failed.');
         end
 
@@ -427,6 +551,10 @@ classdef test_code_beautifier < matlab.unittest.TestCase
                 'disp(total);', ...
                 'end %% End function myFun' ...
             };
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
             expectedCode = { ...
                 'function myFun(list,limit)', ...
                 '% This is a test function', ...
@@ -438,42 +566,57 @@ classdef test_code_beautifier < matlab.unittest.TestCase
                 'disp(total);', ...
                 'end %% End function myFun' ...
             };
-            actualCode = code_beautifier(rawCode, 'IndentSize', 0, 'SpaceAroundOperators', false, 'SpaceAfterComma', false, 'RemoveRedundantSemicolons', true, 'OutputFormat', 'cell');
+            actualCode = code_beautifier('IndentSize', 0, 'SpaceAroundOperators', false, 'SpaceAfterComma', false, 'RemoveRedundantSemicolons', true, 'OutputFormat', 'cell');
             testCase.verifyEqual(actualCode, expectedCode, 'Minimal style combination failed.');
         end
 
         % --- Edge Cases ---
         function testEmptyInputString(testCase)
             rawCode = '';
-            expectedCode = ''; % Default output is char
-            actualCode = code_beautifier(rawCode); % Uses default OutputFormat='char'
-            testCase.verifyEqual(actualCode, expectedCode, 'Empty input string failed for char output.');
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
+            testCase.verifyError(@() code_beautifier(), 'code_beautifier:ActiveEditorEmpty', 'Empty input string with char output did not error as expected.');
             
-            expectedCodeCell = {''}; % For explicit cell output
-            actualCodeCell = code_beautifier(rawCode, 'OutputFormat', 'cell');
-            testCase.verifyEqual(actualCodeCell, expectedCodeCell, 'Empty input string failed for cell output.');
+            % Test with options (e.g. OutputFormat cell)
+            % Re-setup active editor for the second call to ensure clean state
+            doc2 = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc2.closeNoPrompt());
+            pause(0.5);
+            testCase.verifyError(@() code_beautifier('OutputFormat', 'cell'), 'code_beautifier:ActiveEditorEmpty', 'Empty input string with cell output did not error as expected.');
         end
 
         function testEmptyInputCell(testCase)
             rawCode = {''};
-            expectedCode = ''; % Default output is char
-            actualCode = code_beautifier(rawCode); % Uses default OutputFormat='char'
-            testCase.verifyEqual(actualCode, expectedCode, 'Empty input cell failed for char output.');
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
+            testCase.verifyError(@() code_beautifier(), 'code_beautifier:ActiveEditorEmpty', 'Empty input cell with char output did not error as expected.');
 
-            expectedCodeCell = {''}; % For explicit cell output
-            actualCodeCell = code_beautifier(rawCode, 'OutputFormat', 'cell');
-            testCase.verifyEqual(actualCodeCell, expectedCodeCell, 'Empty input cell failed for cell output.');
+            % Re-setup active editor for the second call
+            doc2 = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc2.closeNoPrompt());
+            pause(0.5);
+            testCase.verifyError(@() code_beautifier('OutputFormat', 'cell'), 'code_beautifier:ActiveEditorEmpty', 'Empty input cell with cell output did not error as expected.');
         end
         
         function testEmptyInputStringArray(testCase)
             rawCode = string('');
-            expectedCode = ''; % Default output is char
-            actualCode = code_beautifier(rawCode); % Uses default OutputFormat='char'
-            testCase.verifyEqual(actualCode, expectedCode, 'Empty input string array failed for char output.');
+            if iscell(rawCode); rawCodeString = strjoin(rawCode, sprintf('\n')); else; rawCodeString = rawCode; end
+            % Ensure rawCodeString is char for newDocument
+            if isstring(rawCodeString) && isscalar(rawCodeString); rawCodeString = char(rawCodeString); end 
+            doc = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc.closeNoPrompt());
+            pause(0.5); % Allow editor time to become active and content to be set
+            testCase.verifyError(@() code_beautifier(), 'code_beautifier:ActiveEditorEmpty', 'Empty input string array with char output did not error as expected.');
 
-            expectedCodeCell = {''}; % For explicit cell output
-            actualCodeCell = code_beautifier(rawCode, 'OutputFormat', 'cell');
-            testCase.verifyEqual(actualCodeCell, expectedCodeCell, 'Empty input string array failed for cell output.');
+            % Re-setup active editor for the second call
+            doc2 = matlab.desktop.editor.newDocument(rawCodeString);
+            testCase.addTeardown(@() doc2.closeNoPrompt());
+            pause(0.5);
+            testCase.verifyError(@() code_beautifier('OutputFormat', 'cell'), 'code_beautifier:ActiveEditorEmpty', 'Empty input string array with cell output did not error as expected.');
         end
         
         function testMultipleEmptyLines(testCase)
@@ -1598,63 +1741,6 @@ classdef test_code_beautifier < matlab.unittest.TestCase
 
 
     end % AlignAssignments Tests
-
-    methods (Test) % --- File Input Tests ---
-        function testFileInputSuccessful(testCase)
-            tempFileName = 'temp_script_for_beautifier.m';
-            fid = fopen(tempFileName, 'w');
-            fprintf(fid, 'a=1+2;\nif true; disp(''hello''); end');
-            fclose(fid);
-            cln = onCleanup(@() delete(tempFileName));
-
-            expectedCode = { ...
-                'a = 1 + 2;', ...                         % Default RemoveRedundantSemicolons=true, AddSemicolonsToStatements=false
-                'if true; disp(''hello''); end' ...      % Default SpaceAroundOperators=true
-            };
-            % Test with IndentSize 0 for simpler expected output regarding spacing
-            % Default output is 'char'
-            expectedCodeChar = sprintf('a = 1 + 2;\nif true; disp(''hello''); end');
-            actualCodeChar = code_beautifier(tempFileName, 'IndentSize', 0);
-            testCase.verifyEqual(actualCodeChar, expectedCodeChar);
-
-            % Test with explicit 'cell' for original test logic
-            actualCodeCell = code_beautifier(tempFileName, 'IndentSize', 0, 'OutputFormat', 'cell');
-            testCase.verifyEqual(actualCodeCell, expectedCode);
-        end
-
-        function testFileInputNonExistentFile(testCase)
-            testCase.verifyError(@() code_beautifier('non_existent_file_for_beautifier.m'), ...
-                                 'code_beautifier:FileReadError');
-        end
-
-        function testFileInputNonMFileTreatedAsCode(testCase)
-            % Test 1: Path string that doesn't end in .m is treated as code
-            rawTxtContent = 'this_is_not_matlab_code.txt';
-            expectedForTxtCell = {'this_is_not_matlab_code.txt'}; 
-            actualForTxtCell = code_beautifier(rawTxtContent, 'IndentSize', 0, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
-            testCase.verifyEqual(actualForTxtCell, expectedForTxtCell, 'Non-.m file path string should be treated as code content (cell).');
-
-            expectedForTxtChar = rawTxtContent; % No formatting applied, IndentSize 0
-            actualForTxtChar = code_beautifier(rawTxtContent, 'IndentSize', 0, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'char');
-            testCase.verifyEqual(actualForTxtChar, expectedForTxtChar, 'Non-.m file path string should be treated as code content (char).');
-
-            % Test 2: Actual .txt file's content is read if passed as a path that *ends* in .m (logic flaw in main code if so)
-            % The current file input logic strictly checks for .m extension for reading.
-            % So, passing 'temp_test.txt' should result in 'temp_test.txt' being treated as code.
-            tempFileName = 'temp_test_for_beautifier.txt';
-            fid = fopen(tempFileName, 'w');
-            fprintf(fid, 'actual text content in file');
-            fclose(fid);
-            cln = onCleanup(@() delete(tempFileName));
-            
-            % Based on current code_beautifier, if 'temp_test.txt' is passed, it's not a .m file, so it's treated as code.
-            actualForActualTxtFileCell = code_beautifier(tempFileName, 'IndentSize', 0, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'cell');
-            testCase.verifyEqual(actualForActualTxtFileCell, {tempFileName}, 'Path to .txt file was not treated as code content string (cell).');
-            
-            actualForActualTxtFileChar = code_beautifier(tempFileName, 'IndentSize', 0, 'RemoveRedundantSemicolons', false, 'OutputFormat', 'char');
-            testCase.verifyEqual(actualForActualTxtFileChar, tempFileName, 'Path to .txt file was not treated as code content string (char).');
-        end
-    end % File Input Tests
     
     methods (Test) % --- FormatArgumentsBlock Tests ---
         function testFormatArgumentsBlockSimpleAlignment(testCase)
