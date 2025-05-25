@@ -1,4 +1,4 @@
-function test_code_beautifier_results()
+function test_code_beautifier()
 % TEST_CODE_BEAUTIFIER_RESULTS Script to test the code_beautifier function.
 %
 %   This script creates temporary files, opens them in the editor,
