@@ -91,6 +91,7 @@ end
 % --- Style Presets Definition ---
 stylePresets = struct();
 stylePresets.Default = struct(...
+    'StylePreset', 'Default', ... % Default preset name
     'IndentSize', 4, ...
     'UseTabs', false, ...
     'SpaceAroundOperators', true, ...
@@ -131,155 +132,177 @@ stylePresets.CompactStyle = struct(...
     'FormatArgumentsBlock', false ...
     );
 
-% --- Determine Effective Defaults (Precedence: Function Defaults -> Config File -> Preset -> Direct Args) ---
-% The effective options are determined in a specific order of precedence:
-% 1. Hardcoded Defaults: These are the base settings defined in `stylePresets.Default`.
-% 2. Config File Options: Settings loaded from `.mbeautifyrc` override hardcoded defaults.
-% 3. Style Preset: A chosen style preset (either from config file or direct argument)
-%    overrides settings from step 1 and 2. If specified in both, direct argument preset wins.
-% 4. Direct Arguments: Options passed directly to `code_beautifier` override all previous settings.
+% --- Determine Effective Defaults ---
+% New precedence:
+% 1. Hardcoded Defaults (stylePresets.Default)
+% 2. Config File Preset (if specified and valid)
+% 3. Config File Individual Settings (override config file's preset)
+% 4. Direct Argument Preset (overrides all config file settings)
+% 5. Direct Argument Individual Settings (handled by inputParser, override everything)
 
-% 1. Start with hardcoded function defaults (via stylePresets.Default)
-% `effectiveDefaults` will be progressively updated to reflect the applied settings at each stage.
-% Initially, it holds the most basic defaults.
+% 1. Start with hardcoded function defaults
 effectiveDefaults = stylePresets.Default;
 
-% 2. Load and Overlay Config File Options
-% Load options from `.mbeautifyrc` if it exists in the current working directory.
-% These options will override the initial hardcoded defaults.
-% `knownOptionsInfo` provides metadata about each option (e.g., type) for parsing.
-knownOptionsInfo = getKnownOptionsInfo(stylePresets.Default); % Get type info for parsing config file values.
-configFilePath = fullfile(pwd, '.mbeautifyrc'); % Define the path to the configuration file.
-configFileOptions = struct(); % Initialize a struct to hold options loaded from the config file.
-if exist(configFilePath, 'file') % Check if the config file exists.
-    configFileOptions = parseConfigFile(configFilePath, knownOptionsInfo); % Parse the file.
-    % Overlay options from the config file onto the current `effectiveDefaults`.
-    % If an option from the config file is also in `effectiveDefaults`, its value is updated.
-    fieldsToUpdate = fieldnames(configFileOptions);
-    for k_f = 1:length(fieldsToUpdate)
-        fieldName = fieldsToUpdate{k_f};
-        if isfield(effectiveDefaults, fieldName) % Ensure the option is a known and valid one.
-            effectiveDefaults.(fieldName) = configFileOptions.(fieldName);
+% 2. Parse the config file
+knownOptionsInfo = getKnownOptionsInfo(stylePresets.Default);
+configFilePath = fullfile(pwd, '.mbeautifyrc');
+configFileOptions = struct();
+if exist(configFilePath, 'file')
+    configFileOptions = parseConfigFile(configFilePath, knownOptionsInfo);
+end
+
+% 3. Apply preset from config file, if any
+configDefinedPresetName = ''; % Stores the canonical name of a valid preset from config
+if isfield(configFileOptions, 'ConfigFileStylePreset') && ~isempty(configFileOptions.ConfigFileStylePreset)
+    try
+        validateStylePreset(configFileOptions.ConfigFileStylePreset); % Validate name (throws error if invalid type)
+        tempConfigPresetName = char(configFileOptions.ConfigFileStylePreset); % Store the name from config
+
+        % Canonicalize tempConfigPresetName
+        validPresetNamesForConfig = fieldnames(stylePresets);
+        isKnownConfigPreset = false;
+        canonicalConfigPresetName = '';
+        for vp_idx = 1:length(validPresetNamesForConfig)
+            if strcmpi(tempConfigPresetName, validPresetNamesForConfig{vp_idx})
+                canonicalConfigPresetName = validPresetNamesForConfig{vp_idx}; % Store canonical if known
+                isKnownConfigPreset = true;
+                break;
+            end
         end
+
+        if isKnownConfigPreset % Apply settings if it's a known preset
+            configDefinedPresetName = canonicalConfigPresetName; % Update with the canonical name
+            presetSettingsToApply = stylePresets.(configDefinedPresetName);
+            fieldsToUpdate = fieldnames(presetSettingsToApply);
+            for k_f = 1:length(fieldsToUpdate)
+                fieldName = fieldsToUpdate{k_f};
+                effectiveDefaults.(fieldName) = presetSettingsToApply.(fieldName);
+            end
+            % effectiveDefaults.StylePreset is now configDefinedPresetName
+        else
+            % If not a known preset (e.g., 'MyCustomPreset' not in stylePresets struct), issue warning.
+            % validateStylePreset already checks against a list of known names and would error.
+            % This 'else' might be redundant if validateStylePreset is strict enough.
+            % However, keeping it for robustness against changes in validateStylePreset.
+            warning('code_beautifier:UnknownStylePresetInConfigFile', ...
+                'Unknown StylePreset "%s" in .mbeautifyrc. This preset will not be applied. Using defaults from "%s" or prior settings.', ...
+                configFileOptions.ConfigFileStylePreset, effectiveDefaults.StylePreset);
+        end
+    catch ME_config_preset
+        % If validateStylePreset threw an error (e.g. invalid type or unknown name based on its internal list).
+        warning('code_beautifier:InvalidStylePresetInConfigFile', ...
+            'Invalid StylePreset "%s" in .mbeautifyrc: %s. Ignoring this preset. Using defaults from "%s" or prior settings.', ...
+            configFileOptions.ConfigFileStylePreset, ME_config_preset.message, effectiveDefaults.StylePreset);
     end
 end
 
-% 3. Determine and Overlay StylePreset Options
-%    A StylePreset can be specified either in the `.mbeautifyrc` config file or as a direct
-%    argument to the `code_beautifier` function.
-%    The direct argument for 'StylePreset' takes precedence if both are provided.
-%    Once the `finalPresetName` is determined, its associated settings (from `stylePresets` struct)
-%    override any corresponding settings currently in `effectiveDefaults`.
+% 4. Overlay individual settings from config file (these override the config file's preset if one was applied)
+fieldsToUpdate = fieldnames(configFileOptions);
+for k_f = 1:length(fieldsToUpdate)
+    fieldName = fieldsToUpdate{k_f};
+    if strcmpi(fieldName, 'ConfigFileStylePreset')
+        continue; % Skip this special field, already handled
+    end
+    if isfield(effectiveDefaults, fieldName) % Check if it's a known option
+        effectiveDefaults.(fieldName) = configFileOptions.(fieldName);
+    else
+        % This case should ideally not be reached if parseConfigFile only returns known options
+        warning('code_beautifier:UnknownOptionInConfigFileProcessing', ...
+                'Ignoring unknown option "%s" from config file during effective defaults determination.', fieldName);
+    end
+end
 
-% Check varargin (direct function arguments) for 'StylePreset' first, as it has higher precedence.
-directArgPresetName = ''; % Stores the preset name if provided as a direct argument.
-for k_v = 1:2:length(varargin) % Iterate through Name-Value pairs in varargin.
+% 5. Determine and apply preset from direct arguments (this overrides everything from config)
+directArgPresetNameInput = ''; % The name as provided in varargin
+for k_v = 1:2:length(varargin)
     if strcmpi(varargin{k_v}, 'StylePreset') && k_v + 1 <= length(varargin)
-        directArgPresetName = char(varargin{k_v+1}); % Found 'StylePreset' in direct args.
+        directArgPresetNameInput = char(varargin{k_v+1});
         break;
     end
 end
 
-% `finalPresetName` will store the name of the preset that will ultimately be applied.
-% It's determined by checking direct arguments first, then the config file options.
-finalPresetName = '';
-if ~isempty(directArgPresetName)
-    % A preset name was provided as a direct argument. This takes precedence.
-    % Actual validation of this name (i.e., whether it's a known/valid preset like 'Default', 'MathWorksStyle')
-    % will occur later during the main input parsing stage (using `validateStylePreset`).
-    finalPresetName = directArgPresetName;
-elseif isfield(configFileOptions, 'StylePreset') && ~isempty(configFileOptions.StylePreset)
-    % No direct 'StylePreset' argument, so check if one was specified in the config file.
-    % Validate that this preset name from the config file is one of the known, valid preset names.
+if ~isempty(directArgPresetNameInput) % If a 'StylePreset' was passed in varargin
+    canonicalDirectArgPresetName = ''; % Store canonical name if valid and known
     try
-        validateStylePreset(configFileOptions.StylePreset); % This function checks against known preset names.
-        finalPresetName = char(configFileOptions.StylePreset); % If valid, use this preset name.
-    catch ME
-        % If `validateStylePreset` throws an error (meaning the name is invalid),
-        % issue a warning and ignore the invalid preset from the config file.
-        warning('code_beautifier:InvalidStylePresetInConfigFile', ...
-            'Invalid StylePreset "%s" in .mbeautifyrc: %s. Ignoring this preset.', ...
-            configFileOptions.StylePreset, ME.message);
+        validateStylePreset(directArgPresetNameInput); % Validate name structure/type and against known names
+        
+        % Canonicalize directArgPresetNameInput
+        validPresetNamesForDirect = fieldnames(stylePresets);
+        isKnownDirectPreset = false;
+        for vp_idx = 1:length(validPresetNamesForDirect)
+            if strcmpi(directArgPresetNameInput, validPresetNamesForDirect{vp_idx})
+                canonicalDirectArgPresetName = validPresetNamesForDirect{vp_idx}; % Use canonical casing
+                isKnownDirectPreset = true;
+                break;
+            end
+        end
+
+        if isKnownDirectPreset
+            % Apply settings from the known, valid direct argument preset
+            presetSettingsToApply = stylePresets.(canonicalDirectArgPresetName);
+            fieldsToUpdate = fieldnames(presetSettingsToApply);
+            for k_f = 1:length(fieldsToUpdate)
+                fieldName = fieldsToUpdate{k_f};
+                effectiveDefaults.(fieldName) = presetSettingsToApply.(fieldName);
+            end
+            % effectiveDefaults.StylePreset is now canonicalDirectArgPresetName
+        else
+            % An unknown (but structurally valid by validateStylePreset's initial checks)
+            % preset name was provided. validateStylePreset should ideally catch unknown names.
+            % If it reaches here, it means validateStylePreset might not be strict enough on names.
+            % Set effectiveDefaults.StylePreset to this non-canonical/unknown name;
+            % inputParser's validation for 'StylePreset' (which also calls validateStylePreset)
+            % will be the final gate.
+            effectiveDefaults.StylePreset = directArgPresetNameInput; 
+            % No warning here, as inputParser will handle it.
+        end
+    catch ME_direct_preset
+        % An invalid (e.g., not a string, or fails validateStylePreset's checks) preset name was given.
+        % Set effectiveDefaults.StylePreset to this problematic name; inputParser will catch it.
+        effectiveDefaults.StylePreset = directArgPresetNameInput;
+        % No warning here, as inputParser will handle it.
     end
+% If directArgPresetNameInput is empty, effectiveDefaults.StylePreset already holds
+% the preset name determined from config (if any, and valid) or the initial default.
+% This value is what's passed to inputParser's 'StylePreset' parameter default.
 end
 
-% If a `finalPresetName` has been determined (either from a direct argument or a valid config file entry),
-% apply its settings by overlaying them onto `effectiveDefaults`.
-if ~isempty(finalPresetName)
-    % Ensure `finalPresetName` corresponds to one of the defined preset structures
-    % (e.g., `stylePresets.Default`, `stylePresets.MathWorksStyle`).
-    % This also canonicalizes the casing of `finalPresetName` (e.g., 'default' becomes 'Default').
-    validPresetNames = fieldnames(stylePresets); % Get names of all defined preset structures.
-    isKnownPreset = false; % Flag to track if `finalPresetName` matches a known preset.
-    for vp_idx = 1:length(validPresetNames)
-        if strcmpi(finalPresetName, validPresetNames{vp_idx}) % Case-insensitive matching.
-            finalPresetName = validPresetNames{vp_idx}; % Use the canonical casing (e.g., 'Default').
-            isKnownPreset = true;
-            break;
-        end
-    end
+% --- Input Parsing ---
+% Initialize options with effectiveDefaults.
+options = effectiveDefaults;
 
-    if isKnownPreset
-        % If `finalPresetName` is a known and valid preset, retrieve its settings
-        % from the `stylePresets` struct and apply them, overriding current `effectiveDefaults`.
-        presetSettingsToApply = stylePresets.(finalPresetName);
-        fieldsToUpdate = fieldnames(presetSettingsToApply);
-        for k_f = 1:length(fieldsToUpdate)
-            fieldName = fieldsToUpdate{k_f};
-            effectiveDefaults.(fieldName) = presetSettingsToApply.(fieldName);
-        end
-    elseif ~isempty(directArgPresetName) && strcmpi(directArgPresetName, finalPresetName)
-        % This case occurs if `directArgPresetName` was given (e.g., 'myownstyle') but it's not
-        % among the `stylePresets` keys. The main `inputParser` will later catch this as an
-        % invalid 'StylePreset' value if `validateStylePreset` is correctly set up for the parameter.
-        % No warning is explicitly issued here to avoid redundancy with the inputParser's error.
-    elseif ~isempty(finalPresetName)
-        % This branch might be reached if `finalPresetName` was set from an invalid config file preset
-        % (which should have already generated a warning) and was not overridden by a direct argument.
-        % The main input parser will ultimately handle any invalid preset name that reaches it.
-    end
+if isempty(varargin)
+    % No direct arguments provided, so options are solely based on effectiveDefaults.
+    % Manually add rawCode to the options struct.
+    options.rawCode = rawCode;
+else
+    % Direct arguments were provided, use inputParser to parse them.
+    p = inputParser;
+    % Add rawCode as a required argument.
+    addRequired(p, 'rawCode', @(x) (ischar(x) || isstring(x) || iscellstr(x)));
+
+    % Add all beautifier options as parameters.
+    % Default values are taken from the 'options' struct, which currently holds effectiveDefaults.
+    addParameter(p, 'StylePreset', options.StylePreset, @validateStylePreset);
+    addParameter(p, 'IndentSize', options.IndentSize, @(x) isnumeric(x) && isscalar(x) && x >= 0 && floor(x) == x);
+    addParameter(p, 'UseTabs', options.UseTabs, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'SpaceAroundOperators', options.SpaceAroundOperators, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'SpaceAfterComma', options.SpaceAfterComma, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'ContinuationIndentOffset', options.ContinuationIndentOffset, @(x) isnumeric(x) && isscalar(x) && x >= 0 && floor(x) == x);
+    addParameter(p, 'PreserveBlankLines', options.PreserveBlankLines, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'MinBlankLinesBeforeBlock', options.MinBlankLinesBeforeBlock, @(x) isnumeric(x) && isscalar(x) && x >= 0 && x <=2 && floor(x) == x);
+    addParameter(p, 'RemoveRedundantSemicolons', options.RemoveRedundantSemicolons, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'AddSemicolonsToStatements', options.AddSemicolonsToStatements, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'AlignAssignments', options.AlignAssignments, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'FormatArgumentsBlock', options.FormatArgumentsBlock, @(x) islogical(x) && isscalar(x));
+    addParameter(p, 'OutputFormat', options.OutputFormat, @(x) (ischar(x) || (isstring(x) && isscalar(x))) && ismember(lower(char(x)), {'cell', 'char'}));
+
+    % Parse varargin against the defined parameters.
+    % rawCode is passed as the required argument.
+    % Name-Value pairs in varargin will override defaults set from 'options' struct.
+    parse(p, rawCode, varargin{:});
+    options = p.Results; % Update options with the parsed results.
 end
-
-% --- Input Parsing Setup (using effectiveDefaults) ---
-% The `inputParser` is now initialized. The default values for each parameter are drawn from
-% `effectiveDefaults`. At this stage, `effectiveDefaults` contains settings derived from:
-%   1st: Hardcoded Defaults (from `stylePresets.Default`)
-%   2nd: Overridden by `.mbeautifyrc` Config File Options (if file exists and options are valid)
-%   3rd: Overridden by a Chosen Style Preset's settings (if a preset was specified in config or direct args and was valid)
-%
-% Any options passed directly as arguments in `varargin` to `code_beautifier` will, during the `parse()` call,
-% override these `effectiveDefaults`. This completes the specified order of precedence:
-% Hardcoded -> Config File -> Style Preset -> Direct Arguments.
-p = inputParser;
-% rawCode is now fetched from the active editor, so it's not a required input for the parser.
-% However, it will be passed as the first argument to p.parse later.
-
-% Add all beautifier options as parameters to the input parser.
-% Their default values are set from `effectiveDefaults` which have been built up.
-% Each parameter also has a validation function to ensure its type and range are correct.
-addParameter(p, 'StylePreset', effectiveDefaults.StylePreset, @validateStylePreset); % Note: 'StylePreset' itself is an option that influences other defaults.
-addParameter(p, 'IndentSize', effectiveDefaults.IndentSize, @(x) isnumeric(x) && isscalar(x) && x >= 0 && floor(x) == x);
-addParameter(p, 'UseTabs', effectiveDefaults.UseTabs, @(x) islogical(x) && isscalar(x));
-addParameter(p, 'SpaceAroundOperators', effectiveDefaults.SpaceAroundOperators, @(x) islogical(x) && isscalar(x));
-addParameter(p, 'SpaceAfterComma', effectiveDefaults.SpaceAfterComma, @(x) islogical(x) && isscalar(x));
-addParameter(p, 'ContinuationIndentOffset', effectiveDefaults.ContinuationIndentOffset, @(x) isnumeric(x) && isscalar(x) && x >= 0 && floor(x) == x);
-addParameter(p, 'PreserveBlankLines', effectiveDefaults.PreserveBlankLines, @(x) islogical(x) && isscalar(x));
-addParameter(p, 'MinBlankLinesBeforeBlock', effectiveDefaults.MinBlankLinesBeforeBlock, @(x) isnumeric(x) && isscalar(x) && x >= 0 && x <=2 && floor(x) == x);
-addParameter(p, 'RemoveRedundantSemicolons', effectiveDefaults.RemoveRedundantSemicolons, @(x) islogical(x) && isscalar(x));
-addParameter(p, 'AddSemicolonsToStatements', effectiveDefaults.AddSemicolonsToStatements, @(x) islogical(x) && isscalar(x));
-addParameter(p, 'AlignAssignments', effectiveDefaults.AlignAssignments, @(x) islogical(x) && isscalar(x));
-addParameter(p, 'FormatArgumentsBlock', effectiveDefaults.FormatArgumentsBlock, @(x) islogical(x) && isscalar(x));
-% Ensure OutputFormat is in effectiveDefaults before inputParser setup if it wasn't already from a preset or config.
-% This is now guaranteed because stylePresets.Default includes OutputFormat.
-addParameter(p, 'OutputFormat', effectiveDefaults.OutputFormat, @(x) (ischar(x) || (isstring(x) && isscalar(x))) && ismember(lower(char(x)), {'cell', 'char'}));
-
-% 4. Parse Direct Arguments (varargin). These arguments have the highest precedence.
-%    The inputParser takes `rawCode` (the required argument) and `varargin` (optional Name-Value pairs).
-%    Any Name-Value pairs in `varargin` that match defined parameters will override the defaults
-%    that were previously set in `effectiveDefaults`.
-%    This step finalizes the option precedence: Hardcoded -> Config File -> Style Preset -> Direct Arguments.
-parse(p, rawCode, varargin{:});
-options = p.Results; % `options` now holds the final, fully resolved settings to be used by the beautifier.
 
 % Final check for 'StylePreset' canonical casing within the fully resolved `options`.
 % If a 'StylePreset' was provided as a direct argument (e.g., 'compactstyle' instead of 'CompactStyle')
@@ -329,6 +352,21 @@ midBlockKeywords   = {'elseif', 'else', 'catch', 'case', 'otherwise'}; % Keyword
 allBlockCtrlKeywords = [indentKeywords, dedentKeywords, midBlockKeywords]; % Combined list of all control keywords.
 firstWordPattern   = ['^\s*(', strjoin(allBlockCtrlKeywords, '|'), ')\b']; % Regex pattern to efficiently find the first control keyword on a line.
 
+% --- DEBUG: Print Final Options ---
+fprintf('DEBUG: options.StylePreset = %s\n', char(options.StylePreset)); % Ensure char for string
+fprintf('DEBUG: options.IndentSize = %d\n', options.IndentSize);
+fprintf('DEBUG: options.UseTabs = %d\n', options.UseTabs);
+fprintf('DEBUG: options.SpaceAroundOperators = %d\n', options.SpaceAroundOperators);
+fprintf('DEBUG: options.SpaceAfterComma = %d\n', options.SpaceAfterComma);
+fprintf('DEBUG: options.ContinuationIndentOffset = %d\n', options.ContinuationIndentOffset);
+fprintf('DEBUG: options.PreserveBlankLines = %d\n', options.PreserveBlankLines);
+fprintf('DEBUG: options.MinBlankLinesBeforeBlock = %d\n', options.MinBlankLinesBeforeBlock);
+fprintf('DEBUG: options.RemoveRedundantSemicolons = %d\n', options.RemoveRedundantSemicolons);
+fprintf('DEBUG: options.AddSemicolonsToStatements = %d\n', options.AddSemicolonsToStatements);
+fprintf('DEBUG: options.AlignAssignments = %d\n', options.AlignAssignments);
+fprintf('DEBUG: options.FormatArgumentsBlock = %d\n', options.FormatArgumentsBlock);
+fprintf('DEBUG: options.OutputFormat = %s\n', char(options.OutputFormat)); % Ensure char for string
+    
 % --- Main Processing Loop ---
 % This loop iterates through each line of the input code (`lines`) to apply formatting rules.
 % Key stages for each line include:
@@ -396,11 +434,27 @@ for i = 1:length(lines) % Loop through each line of the input code.
     % Separates the executable code from the trailing line comment (e.g., "code; % comment").
     % Handles cases where '%' might be part of a string literal.
     [codePart, commentPart] = extractCodeAndCommentInternal(trimmedOriginalLine);
+    fprintf('DEBUG_EXTRACTION: line %d, trimmedOriginalLine="%s", codePart="%s", commentPart="%s"\n', i, trimmedOriginalLine, codePart, commentPart);
 
     % --- Determine First Word (Keyword) for Indentation ---
     % Check if the first word in the code part is a control keyword.
-    firstWordToken = regexp(codePart, firstWordPattern, 'tokens', 'once');
-    if ~isempty(firstWordToken), firstWord = firstWordToken{1}; else, firstWord = ''; end
+    tempWords = strsplit(strtrim(codePart)); % Split the codePart into words
+    if ~isempty(tempWords)
+        potentialFirstWord = tempWords{1};
+        % Remove trailing semicolons or other non-alpha characters from potentialFirstWord if necessary,
+        % as keywords won't have them. E.g., for "end;", potentialFirstWord might be "end;".
+        % A simple way for keywords (which are usually purely alphabetic):
+        potentialFirstWord = regexprep(potentialFirstWord, '[^a-zA-Z_].*$', ''); 
+
+        if ismember(potentialFirstWord, allBlockCtrlKeywords)
+            firstWord = potentialFirstWord;
+        else
+            firstWord = ''; % Not a control keyword
+        end
+    else
+        firstWord = ''; % codePart was empty or only whitespace
+    end
+    fprintf('DEBUG_POST_FIRSTWORD_CALC: line %d, firstWord="%s", codePart="%s"\n', i, firstWord, codePart);
 
     % --- Line is Only a Comment (after block comments and empty lines are handled) ---
     % If `codePart` is empty, the line is treated as a full-line comment.
@@ -419,6 +473,7 @@ for i = 1:length(lines) % Loop through each line of the input code.
             currentIndentStr = [previousLineActualIndentStr, ... % Start with previous line's actual code indent
                 repmat(indentChar, 1, options.ContinuationIndentOffset * indentUnit * (options.IndentSize > 0))]; % Add continuation offset
         end
+        fprintf('DEBUG_COMMENT_INDENT: line %d, currentIndentStr length=%d, level=%d, unit=%d, charVal=%d\n', i, length(currentIndentStr), currentLineEffectiveIndentLevel, indentUnit, uint8(indentChar(1)));
         tempBeautifulLines{i} = regexprep([currentIndentStr, commentPart], '\s+$', ''); % Add indent and trim trailing space
         previousLineEndedWithContinuation = false;
         previousLineActualIndentStr = currentIndentStr; % Store this comment's indent for potential next continuation
@@ -497,27 +552,81 @@ for i = 1:length(lines) % Loop through each line of the input code.
 
         % Operator Spacing
         if options.SpaceAroundOperators
-            % General operators (excluding +,- which need context, and element-wise handled by .*, ./ etc.)
+            fprintf('DEBUG: Entering SpaceAroundOperators block. options.SpaceAroundOperators = %d\n', options.SpaceAroundOperators);
+            fprintf('DEBUG: SO: processedCodePart (before any regex): "%s"\n', processedCodePart);
+            
+            fprintf('DEBUG: Processing specific relational/equality ops.\n');
+            relationalOps = {'==', '~=', '<=', '>=', '<', '>'}; % Longer ones first
+            lhs_capture = '([\w\)\]''\.]|\d+\.\d*|\.\d+)'; % Operand before
+            rhs_capture = '([\w\(\[''"]|\d+\.\d*|\.\d+)'; % Operand after
+            for k_rel = 1:length(relationalOps)
+                op_rel = relationalOps{k_rel};
+                escaped_op_rel = regexptranslate('escape', op_rel);
+                pat_rel_robust = ['(\S)\s*', escaped_op_rel, '\s*(\S)']; % Simplified pattern
+                rep_rel = ['$1 ', op_rel, ' $2'];
+                
+                if i == 3 && strcmp(op_rel, '>') % Specific for Test 1, line 3, when processing '>'
+                    fprintf('DEBUG_GT_REGEXPREP_INPUT: Line %d, Op "%s"\n', i, op_rel);
+                    fprintf('    processedCodePart (input): "%s"\n', processedCodePart);
+                    % Ensure pat_rel_robust used here is the one FOR THE '>' OPERATOR
+                    % This means pat_rel_robust should be defined inside the loop or use escaped_op_rel
+                    % The current pat_rel_robust = ['(\S)\s*', escaped_op_rel, '\s*(\S)']; is fine if escaped_op_rel is correctly '>'
+                    fprintf('    pat_rel_robust (pattern for ">"): "%s"\n', pat_rel_robust); 
+                    fprintf('    rep_rel (replacement for ">"): "%s"\n', rep_rel);
+                    
+                    temp_gt_result = regexprep(processedCodePart, pat_rel_robust, rep_rel);
+                    fprintf('    temp_gt_result (output): "%s"\n', temp_gt_result);
+                end
+                
+                old_processedCodePart_rel = processedCodePart; % For DEBUG
+                processedCodePart = regexprep(processedCodePart, pat_rel_robust, rep_rel);
+                if ~strcmp(old_processedCodePart_rel, processedCodePart)
+                    fprintf('DEBUG_REL_OP: Line %d, Op "%s", Before: "%s", After: "%s"\n', i, op_rel, old_processedCodePart_rel, processedCodePart);
+                end
+            end
+            fprintf('DEBUG: processedCodePart after specific relational/equality ops: "%s"\n', processedCodePart);
+            
+            % Keep the existing: fprintf('DEBUG: Checking for function definition = spacing. Before: "%s"\n', processedCodePart);
+            
+            func_def_pat_v3 = '^(\s*function\s+[^=]+?)\s*=\s*(.+)$'; % V3 pattern
+            func_def_rep_v3 = '$1 = $2'; 
+            
+            old_processedCodePart_func_def = processedCodePart; % Use a distinct variable name
+            processedCodePart = regexprep(processedCodePart, func_def_pat_v3, func_def_rep_v3, 'once');
+            
+            if ~strcmp(old_processedCodePart_func_def, processedCodePart)
+                fprintf('DEBUG_FUNC_DEF_EQ: Line %d, After (V3 pattern): "%s"\n', i, processedCodePart);
+            else
+                % Check if it's actually a function definition line to avoid printing for every line
+                if startsWith(strtrim(processedCodePart), 'function')
+                     fprintf('DEBUG_FUNC_DEF_EQ: Line %d, No change with V3 pattern for: "%s"\n', i, old_processedCodePart_func_def);
+                end
+            end
+            
+            % General operators (excluding relational/equality, and +,- which need context, and element-wise handled by .*, ./ etc.)
             opListGeneral = { ...
-                '==', '~=', '<=', '>=', '&&', '||', ... % Comparison & Logical operators
+                '&&', '||', ... % Logical operators (if not moved to relational, but they are often fine with \S)
                 '.*', './', '.\\', '.^', ...             % Element-wise arithmetic operators
                 '*', '/', '\\', '^', ...                 % Other arithmetic operators (in binary context)
-                '=' ...                                  % Assignment operator
+                '=' ...                                  % Assignment operator (general cases)
                 };
+            fprintf('DEBUG: opListGeneral (updated) = {');
+            for k_op_debug = 1:length(opListGeneral) % Use a different loop variable
+                fprintf(' ''%s''', opListGeneral{k_op_debug});
+            end
+            fprintf(' }\n');
+            
             % Iterate to ensure longer operators (e.g., '==') are processed before shorter ones (e.g., '=')
             % to prevent incorrect spacing.
             for op_idx = 1:length(opListGeneral)
                 op = opListGeneral{op_idx};
                 escaped_op = regexptranslate('escape', op); % Escape special regex characters in operator
-                % Pattern `pat`: Catches an operator if it's surrounded by non-whitespace characters,
-                % with optional existing spaces.
-                % (\S): Captures a non-whitespace character (token before operator).
-                % \s*: Matches zero or more whitespace characters.
-                % $1, $2: Backreferences to the captured non-whitespace characters.
+                % Reverted pattern
                 pat = ['(\S)\s*', escaped_op, '\s*(\S)'];
                 rep = ['$1 ', op, ' $2']; % Replaces with: token1<space>operator<space>token2
                 processedCodePart = regexprep(processedCodePart, pat, rep);
             end
+            fprintf('DEBUG_SO_GENERAL: line %d, after general ops: "%s"\n', i, processedCodePart);
 
             % Special handling for binary + and - operators to distinguish from unary.
             % `s1`: Captures a valid character that can precede a binary operator (+ or -).
@@ -530,6 +639,7 @@ for i = 1:length(lines) % Loop through each line of the input code.
             pat_binary_plus_minus = [s1, '\s*([+\-])\s*', s2]; % Capture group 2: the operator + or -
             rep_binary_plus_minus = '$1 $2 $3'; % Add single spaces around the operator
             processedCodePart = regexprep(processedCodePart, pat_binary_plus_minus, rep_binary_plus_minus);
+            fprintf('DEBUG_SO_PLUSMINUS: line %d, after +/- ops: "%s"\n', i, processedCodePart);
 
             % Unary plus/minus and scientific notation fixes (post-general spacing)
             % Fix 1: Remove space after specific preceding tokens if followed by unary +/-.
@@ -539,22 +649,26 @@ for i = 1:length(lines) % Loop through each line of the input code.
             unary_fix_class_1 = '[=\(\[\{,\s&|]';
             pat_unary_fix_1 = ['(', unary_fix_class_1, ')\s+([+\-])\s*(\w|[\.\(])'];
             processedCodePart = regexprep(processedCodePart, pat_unary_fix_1, '$1$2$3');
+            fprintf('DEBUG_SO_UNARY1: line %d, after unary_fix_1: "%s"\n', i, processedCodePart);
 
             % Fix 2: Remove space if unary +/- is at the beginning of the code part (after indent).
             % `pat_unary_fix_2`: Matches <start_of_code><+/-><one_or_more_spaces><operand_char>.
             pat_unary_fix_2 = ['^([+\-])\s+(\w|[\.\(])'];
             processedCodePart = regexprep(processedCodePart, pat_unary_fix_2, '$1$2');
+            fprintf('DEBUG_SO_UNARY2: line %d, after unary_fix_2: "%s"\n', i, processedCodePart);
 
             % Fix scientific notation (e.g., "1 e - 5" -> "1e-5", or "1e + 5" -> "1e+5").
             % Handles cases where spaces might have been inserted around 'e'/'E' or the exponent's sign.
             processedCodePart = regexprep(processedCodePart, '(\d)\s*e\s*([+\-])\s*(\d+)', '$1e$2$3', 'ignorecase'); % e.g. 1e-5 or 1E+10
             processedCodePart = regexprep(processedCodePart, '(\d)\s*e\s*(\d+)', '$1e$2', 'ignorecase'); % For exponents without explicit sign, e.g. 1e10
+            fprintf('DEBUG_SO_SCIENTIFIC: line %d, after scientific_fix: "%s"\n', i, processedCodePart);
         end
 
         % Space after comma
         if options.SpaceAfterComma
             processedCodePart = regexprep(processedCodePart, '\s*,\s*', ', '); % Ensures one space after comma, removes spaces before.
             processedCodePart = regexprep(processedCodePart, ', $', ','); % Removes trailing space if comma is at end of code part.
+            fprintf('DEBUG_SO_COMMA: line %d, after comma_space: "%s"\n', i, processedCodePart);
         end
 
         % Ensure space after a semicolon if it's used as a separator within a statement (e.g., in matrix definitions like `[1; 2]`)
@@ -575,6 +689,7 @@ for i = 1:length(lines) % Loop through each line of the input code.
     end
 
     % --- Stage 7: Update IndentLevel for NEXT line ---
+    fprintf('DEBUG_PRE_INDENT_UPDATE: line %d, firstWord="%s", indentLevel before update (for next line)=%d\n', i, firstWord, indentLevel);
     if options.IndentSize > 0 % Only adjust indent level if indenting is active (IndentSize > 0)
         if ismember(firstWord, dedentKeywords) % Keyword is 'end'
             current_indentLevel_before_dedent = indentLevel;
@@ -1237,6 +1352,9 @@ knownInfo = struct(); % Initialize struct to store info about each known option
 optionNames = fieldnames(defaultSettings); % Get names of all default options
 for i = 1:length(optionNames)
     optName = optionNames{i};
+    if strcmpi(optName, 'StylePreset')
+        continue; % Skip StylePreset, it's handled specially in parseConfigFile
+    end
     value = defaultSettings.(optName); % Get default value to infer type
     % Determine type and specific validators if needed
     if islogical(value)
@@ -1257,8 +1375,8 @@ for i = 1:length(optionNames)
         if strcmp(optName, 'OutputFormat')
             knownInfo.(optName).validator = @(x) (ischar(x) || (isstring(x) && isscalar(x))) && ismember(lower(char(x)), {'cell', 'char'});
             knownInfo.(optName).allowed = {'cell', 'char'}; % For error messages
-        elseif strcmp(optName, 'StylePreset') % StylePreset option itself can be in config
-            knownInfo.(optName).validator = @validateStylePresetConfig; % Use a slightly different validator for config context
+        % elseif strcmp(optName, 'StylePreset') % StylePreset option itself can be in config - This line is now removed
+        %     knownInfo.(optName).validator = @validateStylePresetConfig; % Use a slightly different validator for config context
         end
     end
 end
@@ -1321,6 +1439,19 @@ try
         key = strtrim(parts{1}{1}); % Extracted key.
         valueStr = strtrim(parts{1}{2}); % Extracted value as a string.
 
+        % Handle StylePreset as a special key
+        if strcmpi(key, 'StylePreset')
+            if isempty(valueStr)
+                warning('code_beautifier:EmptyStylePresetValueInConfigFile', ...
+                    'Skipping StylePreset on line %d in .mbeautifyrc because its value is empty.', lineNumber);
+                continue;
+            end
+            % Basic validation for StylePreset value being a string is implicitly handled
+            % by its usage. More specific validation (e.g. known preset names) happens later.
+            parsedOptions.ConfigFileStylePreset = valueStr; % Store it directly
+            continue; % Move to the next line in the config file
+        end
+
         % Find the canonical option name (case-insensitive matching against known option names).
         % `canonicalKey` will be the version of the key as defined in `stylePresets` (e.g., 'IndentSize').
         canonicalKey = '';
@@ -1332,7 +1463,7 @@ try
             end
         end
 
-        if isempty(canonicalKey) % If the key is not a known option.
+        if isempty(canonicalKey) % If the key is not a known option (and not StylePreset).
             warning('code_beautifier:UnknownConfigFileOption', ...
                 'Skipping unknown option "%s" on line %d in .mbeautifyrc.', key, lineNumber);
             continue;
@@ -1367,17 +1498,8 @@ try
                 case 'string'
                     parsedValue = valueStr; % Value is already a string.
                     % Validate string value if a specific validator or allowed list exists.
-                    if strcmp(canonicalKey, 'StylePreset') % Special handling for StylePreset string in config
-                        validateStylePresetConfig(parsedValue); % Use the config-specific validator
-                        % Ensure canonical casing for preset names if matched from config
-                        validPresetNamesInner = {'Default', 'MathWorksStyle', 'CompactStyle'};
-                        for vpi = 1:length(validPresetNamesInner)
-                            if strcmpi(parsedValue, validPresetNamesInner{vpi})
-                                parsedValue = validPresetNamesInner{vpi}; % Use canonical casing
-                                break;
-                            end
-                        end
-                    elseif isfield(info, 'validator') && ~info.validator(parsedValue)
+                    % NOTE: StylePreset is handled before this block, so no special strcmp check for it here.
+                    if isfield(info, 'validator') && ~info.validator(parsedValue)
                         if isfield(info, 'allowed') % Provide allowed values in error if available
                             error('String value "%s" is not one of the allowed values: %s.', parsedValue, strjoin(info.allowed, ', '));
                         else
