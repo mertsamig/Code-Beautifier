@@ -128,6 +128,67 @@ The beautifier's behavior can be customized using the following name-value pair 
         % b           = 3;
         ```
 
+*   **`SpaceInsideParentheses`**
+    *   Purpose: If `true`, adds a single space immediately after an opening parenthesis `(` and immediately before a closing parenthesis `)` if they enclose non-whitespace content. Does not affect empty parentheses `()` or already spaced `( )`.
+    *   Data Type: `logical`
+    *   Default: `false`
+    *   Example (`SpaceInsideParentheses = true`):
+        *   `func(a,b)` becomes `func( a, b )`
+        *   `matrix(idx)` becomes `matrix( idx )`
+        *   `if (condition)` becomes `if ( condition )`
+        *   `myFunc()` remains `myFunc()`
+
+*   **`MaxBlankLinesInCode`**
+    *   Purpose: Specifies the maximum number of consecutive blank lines to preserve *within* code blocks (e.g., inside functions or control flow blocks). This option is active when `PreserveBlankLines` is `true`. If `PreserveBlankLines` is `false`, most internal blank lines are removed regardless of this option.
+    *   Data Type: `scalar integer` (non-negative)
+    *   Default: `1` (Meaning, if `PreserveBlankLines` is true, multiple blank lines will be collapsed to a single blank line by default).
+    *   Example (`PreserveBlankLines = true`, `MaxBlankLinesInCode = 2`):
+        ```matlab
+        % Input:
+        % line1;
+        %
+        %
+        %
+        % line2;
+        %
+        % Output:
+        % line1;
+        %
+        %
+        % line2;
+        ```
+
+## Selective Formatting
+
+You can disable and re-enable formatting for specific sections of your code using special comments:
+
+*   **`% beautify_off`**: Disables formatting for all subsequent lines. The line containing this marker itself will still be formatted according to the rules active when it's encountered.
+*   **`% beautify_on`**: Re-enables formatting for all subsequent lines. The line containing this marker itself will also be formatted.
+
+Lines within a `beautify_off` ... `beautify_on` block are preserved exactly as they are in the original code, including their indentation and all spacing. This is useful for protecting manually formatted complex layouts or code that the beautifier might not handle optimally.
+
+The markers are checked against the core comment text (e.g., `% beautify_off % some other text` will still be recognized). The on/off state is global and not nestable; the first `off` disables, and the first `on` (after an `off`) re-enables.
+
+### Example of Selective Formatting:
+```matlab
+% Input:
+% formatted_code1 = 1+1; % beautify_on (has no effect if already on)
+% % beautify_off
+%   manuallyFormatted = [ 1,  2,  3; % This block will be preserved
+%                         4,  5,  6];
+% % beautify_on
+% formatted_code2 = 2+2;
+
+% Output (assuming default options otherwise):
+% formatted_code1 = 1 + 1; % beautify_on (has no effect if already on)
+% % beautify_off
+%   manuallyFormatted = [ 1,  2,  3; % This block will be preserved
+%                         4,  5,  6];
+% % beautify_on
+% formatted_code2 = 2 + 2;
+```
+
+
 ## Configuration File (`.mbeautifyrc`)
 
 The beautifier can be configured using a file named `.mbeautifyrc` located in the current working directory (`pwd`). This allows you to set your preferred default options without specifying them in each function call.

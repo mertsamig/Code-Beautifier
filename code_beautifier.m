@@ -99,7 +99,9 @@ stylePresets.Default = struct(...
     'AddSemicolonsToStatements', false, ...
     'AlignAssignments', false, ...
     'FormatArgumentsBlock', false, ...
-    'OutputFormat', 'char' ... 
+    'OutputFormat', 'char', ...
+    'SpaceInsideParentheses', false, ... % New option
+    'MaxBlankLinesInCode', 1 ... % New option
     );
 stylePresets.MathWorksStyle = struct(...
     'StylePreset', 'MathWorksStyle', ... % FIXED: Added StylePreset field
@@ -114,7 +116,9 @@ stylePresets.MathWorksStyle = struct(...
     'AddSemicolonsToStatements', false, ...
     'AlignAssignments', false, ...
     'FormatArgumentsBlock', false, ...
-    'OutputFormat', 'char' ... % Added OutputFormat for consistency, will be overridden by Default if not specified
+    'OutputFormat', 'char', ... % Added OutputFormat for consistency, will be overridden by Default if not specified
+    'SpaceInsideParentheses', false, ... % New option
+    'MaxBlankLinesInCode', 1 ... % New option (MathWorks style might keep 1)
     );
 stylePresets.CompactStyle = struct(...
     'StylePreset', 'CompactStyle', ... % FIXED: Added StylePreset field
@@ -129,7 +133,9 @@ stylePresets.CompactStyle = struct(...
     'AddSemicolonsToStatements', false, ...
     'AlignAssignments', false, ...
     'FormatArgumentsBlock', false, ...
-    'OutputFormat', 'char' ... % Added OutputFormat for consistency
+    'OutputFormat', 'char', ... % Added OutputFormat for consistency
+    'SpaceInsideParentheses', false, ... % New option
+    'MaxBlankLinesInCode', 0 ... % New option (Compact style might remove internal blank lines)
     );
 
 % --- Determine Effective Defaults ---
@@ -253,6 +259,8 @@ else
     addParameter(p, 'AlignAssignments', options.AlignAssignments, @(x) islogical(x) && isscalar(x));
     addParameter(p, 'FormatArgumentsBlock', options.FormatArgumentsBlock, @(x) islogical(x) && isscalar(x));
     addParameter(p, 'OutputFormat', options.OutputFormat, @(x) (ischar(x) || (isstring(x) && isscalar(x))) && ismember(lower(char(x)), {'cell', 'char'}));
+    addParameter(p, 'SpaceInsideParentheses', options.SpaceInsideParentheses, @(x) islogical(x) && isscalar(x)); % New option
+    addParameter(p, 'MaxBlankLinesInCode', options.MaxBlankLinesInCode, @(x) isnumeric(x) && isscalar(x) && x >= 0 && floor(x)==x); % New option
 
     parse(p, rawCode, varargin{:});
     options = p.Results; 
@@ -313,103 +321,165 @@ allBlockCtrlKeywords = [indentKeywords, dedentKeywords, midBlockKeywords];
     
 % --- Main Processing Loop ---
 indentLevel = 0; 
-tempBeautifulLines = cell(size(lines)); 
+tempBeautifulLines = cell(length(lines), 1); 
 inBlockComment = false; 
 previousLineEndedWithContinuation = false; 
 previousLineActualIndentStr = ''; 
 
 inSwitchBlockDepth = 0; 
 inCaseBody = false;     
+isFormattingDisabled = false; % State for selective formatting
+
+% Define markers
+markerOff = 'beautify_off'; % User writes '% beautify_off'
+markerOn = 'beautify_on';   % User writes '% beautify_on'
 
 for i = 1:length(lines) 
     originalLine = lines{i}; 
     trimmedOriginalLine = strtrim(originalLine); 
+    
+    lineData = struct(...
+        'originalLine', originalLine, ...
+        'trimmedOriginalLine', trimmedOriginalLine, ...
+        'isBlockCommentBoundaryStart', false, ...
+        'isBlockCommentBoundaryEnd', false, ...
+        'isBlockCommentContent', false, ...
+        'isBlankLine', false, ...
+        'codePart', '', ...
+        'commentPart', '', ...
+        'firstWord', '', ...
+        'effectiveIndentLevel', 0, ...
+        'effectiveIndentString', '', ...
+        'processedCodePart', '', ... % Code part after initial processing (semicolons, spacing)
+        'lineEndsWithContinuation', false, ...
+        'formattedLine', '', ...
+        'formattingSkipped', false); % New field
+
+    % Handle selective formatting state for the CURRENT line
+    % The decision to skip formatting applies to the current line based on the state *before* processing its comment.
+    lineData.formattingSkipped = isFormattingDisabled;
 
     if startsWith(trimmedOriginalLine, '%{') 
         inBlockComment = true;
-        baseIndentStr = repmat(indentChar, 1, indentLevel * indentUnit * (options.IndentSize > 0) );
-        tempBeautifulLines{i} = [baseIndentStr, trimmedOriginalLine]; 
-        previousLineEndedWithContinuation = false;
+        lineData.isBlockCommentBoundaryStart = true;
+        lineData.isBlockCommentContent = true; % The '%{' line is part of the content
+        baseIndentStr = repmat(indentChar, 1, indentLevel * indentUnit);
+        lineData.effectiveIndentString = baseIndentStr;
+        lineData.formattedLine = [baseIndentStr, trimmedOriginalLine];
+        lineData.codePart = trimmedOriginalLine; % Treat whole line as "code" for this purpose
+        previousLineEndedWithContinuation = false; % Block comment start resets continuation
+        tempBeautifulLines{i} = lineData;
         continue; 
     elseif inBlockComment 
-        baseIndentStr = repmat(indentChar, 1, indentLevel * indentUnit * (options.IndentSize > 0) );
+        lineData.isBlockCommentContent = true;
+        % The multiplier `(options.IndentSize > 0)` was removed in a previous commit for `baseIndentStr` here.
+        % It should be `indentLevel * indentUnit`.
+        baseIndentStr = repmat(indentChar, 1, indentLevel * indentUnit); 
         if endsWith(trimmedOriginalLine, '%}') 
             inBlockComment = false;
+            lineData.isBlockCommentBoundaryEnd = true;
         end
-        tempBeautifulLines{i} = [baseIndentStr, originalLine];
-        previousLineEndedWithContinuation = false;
+        lineData.effectiveIndentString = baseIndentStr;
+        lineData.formattedLine = [baseIndentStr, originalLine]; % Use originalLine to preserve internal spacing
+        lineData.codePart = originalLine; % Treat whole line as "code"
+        previousLineEndedWithContinuation = false; % Block comment content resets continuation
+        tempBeautifulLines{i} = lineData;
         continue; 
     end
 
+    % Process current line's comment for beautify_off/on markers
+    % This will affect the isFormattingDisabled state for the *next* line.
+    [tempCodePartForMarkerCheck, tempCommentPartForMarkerCheck] = extractCodeAndCommentInternal(trimmedOriginalLine);
+    
+    % Trim comment further to get the actual text: " % my comment " -> "my comment"
+    coreCommentText = '';
+    if ~isempty(tempCommentPartForMarkerCheck)
+        % remove " % " or " %" or "% " or "%" from the beginning
+        coreCommentText = strtrim(regexprep(tempCommentPartForMarkerCheck, '^\s*%\s*', ''));
+    end
+
+    if strcmp(coreCommentText, markerOff)
+        isFormattingDisabled = true;
+        % The current line with the marker IS still formatted.
+    elseif strcmp(coreCommentText, markerOn)
+        isFormattingDisabled = false;
+        % The current line with the marker IS still formatted.
+    end
+
+    if lineData.formattingSkipped && ~lineData.isBlockCommentBoundaryStart && ~lineData.isBlockCommentContent && ~lineData.isBlockCommentBoundaryEnd
+        lineData.formattedLine = originalLine; % Preserve original line completely
+        lineData.codePart = trimmedOriginalLine; % For safety, though might not be used if formattedLine is directly used
+        lineData.processedCodePart = trimmedOriginalLine;
+        lineData.commentPart = ''; % No separate comment handling if skipped
+        % Do NOT update previousLineEndedWithContinuation or previousLineActualIndentStr based on this unformatted line
+        % Do NOT update indentLevel based on this unformatted line's content
+        tempBeautifulLines{i} = lineData;
+        continue; % Skip all other formatting for this line
+    end
+    
+    % If formatting is not skipped for this line, proceed as normal
     if isempty(trimmedOriginalLine)
-        tempBeautifulLines{i} = '';
-        previousLineEndedWithContinuation = false;
+        lineData.isBlankLine = true;
+        lineData.formattedLine = '';
+        previousLineEndedWithContinuation = false; % Reset for blank lines
+        tempBeautifulLines{i} = lineData;
         continue; 
     end
 
-    [codePart, commentPart] = extractCodeAndCommentInternal(trimmedOriginalLine);
-    % fprintf('DEBUG_EXTRACTION: line %d, trimmedOriginalLine="%s", codePart="%s", commentPart="%s"\n', i, trimmedOriginalLine, codePart, commentPart);
+    % Re-extract if not done above or if formatting is active for this line.
+    % If formattingSkipped was true, we'd have continued. So this line is being formatted.
+    [codeP, commentP] = extractCodeAndCommentInternal(trimmedOriginalLine);
+    lineData.codePart = codeP; 
+    lineData.commentPart = commentP; 
 
-    tempWords = strsplit(strtrim(codePart)); 
-    if ~isempty(tempWords)
+    tempWords = strsplit(strtrim(lineData.codePart)); 
+    if ~isempty(tempWords) && ~isempty(tempWords{1})
         potentialFirstWord = tempWords{1};
-        potentialFirstWord = regexprep(potentialFirstWord, '[^a-zA-Z_].*$', ''); 
-
+        % Strip trailing non-alphanumeric_OR_underscore chars (e.g. from 'function(arg)')
+        potentialFirstWord = regexprep(potentialFirstWord, '[^a-zA-Z_0-9].*$', ''); 
         if ismember(potentialFirstWord, allBlockCtrlKeywords)
-            firstWord = potentialFirstWord;
-        else
-            firstWord = ''; 
+            lineData.firstWord = potentialFirstWord;
         end
-    else
-        firstWord = ''; 
     end
-    % fprintf('DEBUG_POST_FIRSTWORD_CALC: line %d, firstWord="%s", codePart="%s"\n', i, firstWord, codePart);
-
-    if isempty(codePart) && ~isempty(commentPart) 
-        currentLineEffectiveIndentLevel = indentLevel;
-        if inCaseBody
-            currentLineEffectiveIndentLevel = currentLineEffectiveIndentLevel + 1;
-        end
-        currentIndentStr = repmat(indentChar, 1, currentLineEffectiveIndentLevel * indentUnit * (options.IndentSize > 0));
-
-        if previousLineEndedWithContinuation
-            currentIndentStr = [previousLineActualIndentStr, ... 
-                repmat(indentChar, 1, options.ContinuationIndentOffset * indentUnit * (options.IndentSize > 0))]; 
-        end
-        % fprintf('DEBUG_COMMENT_INDENT: line %d, currentIndentStr length=%d, level=%d, unit=%d, charVal=%d\n', i, length(currentIndentStr), currentLineEffectiveIndentLevel, indentUnit, uint8(indentChar(1)));
-        tempBeautifulLines{i} = regexprep([currentIndentStr, commentPart], '\s+$', ''); 
-        previousLineEndedWithContinuation = false;
-        previousLineActualIndentStr = currentIndentStr; 
-        continue; 
-    end
+    firstWord = lineData.firstWord; 
 
     currentLineEffectiveIndentLevel = indentLevel; 
-
-    if ismember(firstWord, dedentKeywords) 
+    if isempty(lineData.codePart) && ~isempty(lineData.commentPart) 
+        if inCaseBody 
+            currentLineEffectiveIndentLevel = currentLineEffectiveIndentLevel + 1;
+        end
+        % Effective indent level for comment-only lines is current indentLevel
+    elseif ismember(firstWord, dedentKeywords) 
         currentLineEffectiveIndentLevel = max(0, indentLevel - 1); 
     elseif ismember(firstWord, midBlockKeywords) 
         if ismember(firstWord, {'case', 'otherwise'})
-            inCaseBody = true; 
-        else 
+            % 'case' and 'otherwise' themselves are at the parent switch's indent level.
+            % Content *after* them will be indented further.
+            inCaseBody = true; % Flag that subsequent lines are in case body
+            currentLineEffectiveIndentLevel = max(0, indentLevel - 1); % Align with parent 'switch'
+        else % elseif, else, catch
             currentLineEffectiveIndentLevel = max(0, indentLevel - 1);
-            inCaseBody = false; 
+            inCaseBody = false; % Reset for else/elseif/catch
         end
     end
-
-    if inCaseBody && ~ismember(firstWord, allBlockCtrlKeywords) && ~isempty(firstWord) 
-        currentLineEffectiveIndentLevel = currentLineEffectiveIndentLevel + 1; 
+    
+    % For non-keyword lines within a 'case' or 'otherwise' body (but not for 'case'/'otherwise' themselves)
+    if inCaseBody && ~ismember(firstWord, {'case', 'otherwise'}) && ~isempty(lineData.codePart)
+        currentLineEffectiveIndentLevel = currentLineEffectiveIndentLevel + 1;
     end
+    lineData.effectiveIndentLevel = currentLineEffectiveIndentLevel;
 
-    currentIndentStr = repmat(indentChar, 1, currentLineEffectiveIndentLevel * indentUnit * (options.IndentSize > 0));
-
+    currentIndentStr = repmat(indentChar, 1, currentLineEffectiveIndentLevel * indentUnit);
     if previousLineEndedWithContinuation
         currentIndentStr = [previousLineActualIndentStr, ... 
-            repmat(indentChar, 1, options.ContinuationIndentOffset * indentUnit * (options.IndentSize > 0))]; 
+            repmat(indentChar, 1, options.ContinuationIndentOffset * indentUnit)]; 
     end
-    previousLineActualIndentStr = currentIndentStr; 
+    lineData.effectiveIndentString = currentIndentStr;
+    previousLineActualIndentStr = currentIndentStr; % Save for potential next continuation
 
-    processedCodePart = codePart; 
+    processedCodePart = lineData.codePart; 
     if ~isempty(processedCodePart)
+        % Apply semicolon and operator/comma spacing rules
         if options.RemoveRedundantSemicolons
             processedCodePart = regexprep(processedCodePart, ';(\s*;)+', ';'); 
             if strcmp(firstWord, 'end') && endsWith(strtrim(processedCodePart), ';')
@@ -424,53 +494,27 @@ for i = 1:length(lines)
             isAssignment = ~isempty(regexp(processedCodePart, '(?<![=<>~.\s])=(?![=])', 'once')); 
             isKeywordLine = ~isempty(firstWord); 
             endsWithContOrSemi = endsWith(strtrim(processedCodePart), '...') || endsWith(strtrim(processedCodePart), ';'); 
-
             isFunctionCallLike = ~isempty(regexp(processedCodePart, '\w\s*\(.*\)', 'once')); 
             isSimpleExpression = ~isempty(regexp(processedCodePart, '\w', 'once')) && ... 
                 isempty(regexp(processedCodePart,'^\s*\w+\s*$', 'once')); 
-
             if ~isAssignment && ~isKeywordLine && ~endsWithContOrSemi && (isFunctionCallLike || isSimpleExpression)
                 processedCodePart = [processedCodePart, ';']; 
             end
         end
 
         if options.SpaceAroundOperators
-            % fprintf('DEBUG: Entering SpaceAroundOperators block. options.SpaceAroundOperators = %d\n', options.SpaceAroundOperators);
-            % fprintf('DEBUG: SO: processedCodePart (before any regex): "%s"\n', processedCodePart);
-            
-            % fprintf('DEBUG: Processing specific relational/equality ops.\n');
             relationalOps = {'==', '~=', '<=', '>=', '<', '>'}; 
-            % lhs_capture = '([\w\)\]''\.]|\d+\.\d*|\.\d+)'; % Defined but not used
-            % rhs_capture = '([\w\(\[''"]|\d+\.\d*|\.\d+)'; % Defined but not used
             for k_rel = 1:length(relationalOps)
                 op_rel = relationalOps{k_rel};
                 escaped_op_rel = regexptranslate('escape', op_rel);
                 pat_rel_robust = ['(\S)\s*', escaped_op_rel, '\s*(\S)']; 
                 rep_rel = ['$1 ', op_rel, ' $2'];
-                
-                % REMOVED specific DEBUG_GT_REGEXPREP_INPUT block
-                
-                old_processedCodePart_rel = processedCodePart; 
                 processedCodePart = regexprep(processedCodePart, pat_rel_robust, rep_rel);
-                if ~strcmp(old_processedCodePart_rel, processedCodePart)
-                    % fprintf('DEBUG_REL_OP: Line %d, Op "%s", Before: "%s", After: "%s"\n', i, op_rel, old_processedCodePart_rel, processedCodePart);
-                end
             end
-            % fprintf('DEBUG: processedCodePart after specific relational/equality ops: "%s"\n', processedCodePart);
             
             func_def_pat_v3 = '^(\s*function\s+[^=]+?)\s*=\s*(.+)$'; 
             func_def_rep_v3 = '$1 = $2'; 
-            
-            old_processedCodePart_func_def = processedCodePart; 
             processedCodePart = regexprep(processedCodePart, func_def_pat_v3, func_def_rep_v3, 'once');
-            
-            if ~strcmp(old_processedCodePart_func_def, processedCodePart)
-                % fprintf('DEBUG_FUNC_DEF_EQ: Line %d, After (V3 pattern): "%s"\n', i, processedCodePart);
-            else
-                if startsWith(strtrim(processedCodePart), 'function')
-                     % fprintf('DEBUG_FUNC_DEF_EQ: Line %d, No change with V3 pattern for: "%s"\n', i, old_processedCodePart_func_def);
-                end
-            end
             
             opListGeneral = { ...
                 '&&', '||', ... 
@@ -478,12 +522,6 @@ for i = 1:length(lines)
                 '*', '/', '\\', '^', ...                 
                 '=' ...                                  
                 };
-            % fprintf('DEBUG: opListGeneral (updated) = {');
-            % for k_op_debug = 1:length(opListGeneral) 
-            %     fprintf(' ''%s''', opListGeneral{k_op_debug});
-            % end
-            % fprintf(' }\n');
-            
             for op_idx = 1:length(opListGeneral)
                 op = opListGeneral{op_idx};
                 escaped_op = regexptranslate('escape', op); 
@@ -491,137 +529,179 @@ for i = 1:length(lines)
                 rep = ['$1 ', op, ' $2']; 
                 processedCodePart = regexprep(processedCodePart, pat, rep);
             end
-            % fprintf('DEBUG_SO_GENERAL: line %d, after general ops: "%s"\n', i, processedCodePart);
 
             s1 = '(\w|\)|\]|\'')'; 
             s2 = '(\w|\(|\[|\.)'; 
             pat_binary_plus_minus = [s1, '\s*([+\-])\s*', s2]; 
             rep_binary_plus_minus = '$1 $2 $3'; 
             processedCodePart = regexprep(processedCodePart, pat_binary_plus_minus, rep_binary_plus_minus);
-            % fprintf('DEBUG_SO_PLUSMINUS: line %d, after +/- ops: "%s"\n', i, processedCodePart);
 
-            unary_fix_class_1 = '[=\(\[\{,\s&|]';
+            unary_fix_class_1 = '[=\(\[\{,\s&|]'; % Corrected: Added &| as per original
             pat_unary_fix_1 = ['(', unary_fix_class_1, ')\s+([+\-])\s*(\w|[\.\(])'];
             processedCodePart = regexprep(processedCodePart, pat_unary_fix_1, '$1$2$3');
-            % fprintf('DEBUG_SO_UNARY1: line %d, after unary_fix_1: "%s"\n', i, processedCodePart);
 
             pat_unary_fix_2 = ['^([+\-])\s+(\w|[\.\(])'];
             processedCodePart = regexprep(processedCodePart, pat_unary_fix_2, '$1$2');
-            % fprintf('DEBUG_SO_UNARY2: line %d, after unary_fix_2: "%s"\n', i, processedCodePart);
 
             processedCodePart = regexprep(processedCodePart, '(\d)\s*e\s*([+\-])\s*(\d+)', '$1e$2$3', 'ignorecase'); 
             processedCodePart = regexprep(processedCodePart, '(\d)\s*e\s*(\d+)', '$1e$2', 'ignorecase'); 
-            % fprintf('DEBUG_SO_SCIENTIFIC: line %d, after scientific_fix: "%s"\n', i, processedCodePart);
         end
 
         if options.SpaceAfterComma
             processedCodePart = regexprep(processedCodePart, '\s*,\s*', ', '); 
             processedCodePart = regexprep(processedCodePart, ', $', ','); 
-            % fprintf('DEBUG_SO_COMMA: line %d, after comma_space: "%s"\n', i, processedCodePart);
+        end
+        
+        if options.SpaceInsideParentheses
+            % Add space after ( if not followed by space, another (, or )
+            processedCodePart = regexprep(processedCodePart, '\((?=[^\s\)])', '( ');
+            % Add space before ) if not preceded by space, another ), or (
+            processedCodePart = regexprep(processedCodePart, '(?<=[^\s\(\(])\)', ' )');
+            % Handle empty parentheses `()` or `( )` - ensure they become `()` without inner space
+            processedCodePart = regexprep(processedCodePart, '\(\s+\)', '()');
         end
 
         processedCodePart = regexprep(processedCodePart, ';(\S)', '; $1');
     end
-
-    if isempty(strtrim(processedCodePart)) && ~isempty(commentPart) 
-        tempBeautifulLines{i} = regexprep([currentIndentStr, commentPart], '\s+$', '');
-    elseif ~isempty(strtrim(processedCodePart)) && ~isempty(commentPart) 
-        tempBeautifulLines{i} = regexprep([currentIndentStr, strtrim(processedCodePart), commentPart], '\s+$', '');
-    elseif ~isempty(strtrim(processedCodePart)) 
-        tempBeautifulLines{i} = regexprep([currentIndentStr, strtrim(processedCodePart)], '\s+$', '');
-    else 
-        tempBeautifulLines{i} = '';
+    lineData.processedCodePart = strtrim(processedCodePart); % Store the processed code part
+    
+    % Reconstruct the formatted line string for current stage
+    if isempty(lineData.processedCodePart) && ~isempty(lineData.commentPart) 
+        lineData.formattedLine = regexprep([currentIndentStr, lineData.commentPart], '\s+$', '');
+    elseif ~isempty(lineData.processedCodePart) && ~isempty(lineData.commentPart) 
+        lineData.formattedLine = regexprep([currentIndentStr, lineData.processedCodePart, lineData.commentPart], '\s+$', '');
+    elseif ~isempty(lineData.processedCodePart) 
+        lineData.formattedLine = regexprep([currentIndentStr, lineData.processedCodePart], '\s+$', '');
+    else % Both processedCodePart and commentPart are empty (already handled by isBlankLine or block comments)
+        lineData.formattedLine = ''; % Should ideally be just currentIndentStr if it was a blank line with indent. But handled by isBlankLine.
     end
+    
+    lineData.lineEndsWithContinuation = endsWith(strtrim(lineData.processedCodePart), '...');
+    previousLineEndedWithContinuation = lineData.lineEndsWithContinuation;
+    
+    tempBeautifulLines{i} = lineData;
 
-    % fprintf('DEBUG_PRE_INDENT_UPDATE: line %d, firstWord="%s", indentLevel before update (for next line)=%d\n', i, firstWord, indentLevel);
-    if options.IndentSize > 0 
-        if ismember(firstWord, dedentKeywords) 
-            current_indentLevel_before_dedent = indentLevel;
+    % Update indentLevel for the next line based on the firstWord of the current line's code part
+    % This should only happen if formatting was NOT skipped for this line.
+    % If formatting was skipped, indentLevel remains unchanged from the previous formatted line.
+    if ~lineData.formattingSkipped && options.IndentSize > 0 % Only change indentLevel if indentation is active & line was formatted
+        if ismember(lineData.firstWord, dedentKeywords) 
+            current_indentLevel_before_dedent = indentLevel; 
             indentLevel = max(0, indentLevel - 1); 
-
-            if inSwitchBlockDepth > 0 
-                if indentLevel < current_indentLevel_before_dedent 
-                    inSwitchBlockDepth = max(0, inSwitchBlockDepth - 1);
-                    if inSwitchBlockDepth == 0 
-                        inCaseBody = false; 
-                    end
+            if inSwitchBlockDepth > 0 && indentLevel < current_indentLevel_before_dedent
+                inSwitchBlockDepth = max(0, inSwitchBlockDepth - 1);
+                if inSwitchBlockDepth == 0 
+                    inCaseBody = false; 
                 end
             end
-        elseif ismember(firstWord, midBlockKeywords) 
-            if ismember(firstWord, {'case', 'otherwise'})
-                % indentLevel does not change here for 'case'/'otherwise'
-            else 
-                indentLevel = max(0, indentLevel - 1); 
-                indentLevel = indentLevel + 1;         
+        elseif ismember(lineData.firstWord, midBlockKeywords) 
+            if ismember(lineData.firstWord, {'case', 'otherwise'})
+                % indentLevel for 'case'/'otherwise' line itself is parent's level (already set).
+                % inCaseBody flag is set prior to this block.
+            else % elseif, else, catch
+                % These keywords are dedented, then effectively re-indented with the block.
+                % The currentLineEffectiveIndentLevel is already set to (indentLevel - 1).
+                % The indentLevel for the *next* line will be (indentLevel - 1) + 1 = indentLevel.
+                % No change to indentLevel for next line based on these keywords alone,
+                % but they do reset inCaseBody.
+                inCaseBody = false; % Not strictly necessary here as it's reset by 'if' etc.
             end
-        elseif ismember(firstWord, indentKeywords) 
-            if strcmp(firstWord, 'switch')
+        elseif ismember(lineData.firstWord, indentKeywords) 
+            if strcmp(lineData.firstWord, 'switch')
                 inSwitchBlockDepth = inSwitchBlockDepth + 1; 
             end
             indentLevel = indentLevel + 1; 
         end
     end
-    previousLineEndedWithContinuation = endsWith(strtrim(processedCodePart), '...'); 
 end
 
+% Convert cell array of structs to cell array of formatted line strings for further processing
+formattedLineStrings = cell(length(tempBeautifulLines), 1);
+for k_line = 1:length(tempBeautifulLines)
+    if isstruct(tempBeautifulLines{k_line}) % Ensure it's a struct (might be empty if original line was empty and not processed)
+        formattedLineStrings{k_line} = tempBeautifulLines{k_line}.formattedLine;
+    else
+        formattedLineStrings{k_line} = ''; % Should have been populated as a struct
+    end
+end
+
+
 % --- Post Processing: Blank Lines and MinBlankLinesBeforeBlock ---
-finalOutputLines = cell(1, length(tempBeautifulLines) + options.MinBlankLinesBeforeBlock * length(tempBeautifulLines)); 
+% This section now operates on formattedLineStrings derived from lineData.formattedLine
+finalOutputLines = cell(1, length(formattedLineStrings) + options.MinBlankLinesBeforeBlock * length(formattedLineStrings) + length(formattedLineStrings)); % Max possible size
 finalLineCount = 0;
-lastMeaningfulLineWasBlank = true; 
+consecutiveBlankLineCount = 0; % For MaxBlankLinesInCode
 
-for k = 1:length(tempBeautifulLines) 
-    currentLineContent = strtrim(tempBeautifulLines{k}); 
-    isCurrentLineBlank = isempty(currentLineContent); 
+for k = 1:length(formattedLineStrings) 
+    currentLineStruct = tempBeautifulLines{k}; % Get the struct for more info
+    currentLineContent = formattedLineStrings{k}; % Use the already formatted string
+    isCurrentLineActuallyBlank = currentLineStruct.isBlankLine || isempty(strtrim(currentLineContent)); % Consider original blank or if formatting made it effectively blank (e.g. only indent)
 
-    if options.MinBlankLinesBeforeBlock > 0 && ~isCurrentLineBlank && finalLineCount > 0
-        [codeP_for_blank_check, ~] = extractCodeAndCommentInternal(currentLineContent); 
-        firstWordToken_for_blank_check = regexp(codeP_for_blank_check, ['^\s*(', strjoin(indentKeywords, '|'), ')\b'], 'tokens', 'once');
-
-        if ~isempty(firstWordToken_for_blank_check) 
-            blanksNeeded = options.MinBlankLinesBeforeBlock;
-            numExistingBlanks = 0;
-            if finalLineCount > 0
-                for j = finalLineCount:-1:1 
-                    if isempty(strtrim(finalOutputLines{j}))
-                        numExistingBlanks = numExistingBlanks + 1;
-                    else
-                        break; 
-                    end
+    % 1. Handle MinBlankLinesBeforeBlock (only if current line is not blank itself)
+    if options.MinBlankLinesBeforeBlock > 0 && ~isCurrentLineActuallyBlank && finalLineCount > 0
+        firstWordToken_for_blank_check_str = '';
+        if ~currentLineStruct.isBlockCommentBoundaryStart && ~currentLineStruct.isBlockCommentContent
+            firstWordToken_for_blank_check_str = currentLineStruct.firstWord;
+        end
+        
+        if ismember(firstWordToken_for_blank_check_str, indentKeywords)
+            % Count existing blank lines immediately preceding this non-blank line
+            numExistingBlanksImmediatelyBefore = 0;
+            for j = finalLineCount:-1:max(1, finalLineCount - options.MinBlankLinesBeforeBlock -1) % Look back a bit
+                if isempty(strtrim(finalOutputLines{j}))
+                    numExistingBlanksImmediatelyBefore = numExistingBlanksImmediatelyBefore + 1;
+                else
+                    break; % Hit a non-blank line
                 end
             end
-
-            for bl = 1:max(0, blanksNeeded - numExistingBlanks)
-                finalLineCount = finalLineCount + 1;
-                finalOutputLines{finalLineCount} = '';
+            
+            blanksToAdd = options.MinBlankLinesBeforeBlock - numExistingBlanksImmediatelyBefore;
+            for bl = 1:blanksToAdd
+                if finalLineCount > 0 && ~isempty(strtrim(finalOutputLines{finalLineCount})) % Ensure previous wasn't already blank from other logic
+                     finalLineCount = finalLineCount + 1;
+                     finalOutputLines{finalLineCount} = '';
+                elseif finalLineCount == 0 % If it's the first line, add blank line
+                     finalLineCount = finalLineCount + 1;
+                     finalOutputLines{finalLineCount} = '';
+                end
             end
         end
     end
 
-    if isCurrentLineBlank
-        if options.PreserveBlankLines 
-            if ~lastMeaningfulLineWasBlank 
+    % 2. Handle current line (blank or content) based on PreserveBlankLines and MaxBlankLinesInCode
+    if isCurrentLineActuallyBlank
+        if options.PreserveBlankLines
+            consecutiveBlankLineCount = consecutiveBlankLineCount + 1;
+            if consecutiveBlankLineCount <= options.MaxBlankLinesInCode
                 finalLineCount = finalLineCount + 1;
-                finalOutputLines{finalLineCount} = ''; 
-                lastMeaningfulLineWasBlank = true;
+                finalOutputLines{finalLineCount} = ''; % Add the blank line (it's empty)
             end
+        else
+            % Do not add blank line if PreserveBlankLines is false (equivalent to MaxBlankLinesInCode = 0)
+            consecutiveBlankLineCount = 0; % Reset counter
         end
-    else 
+    else % Current line has content
+        consecutiveBlankLineCount = 0; % Reset counter
         finalLineCount = finalLineCount + 1;
-        finalOutputLines{finalLineCount} = tempBeautifulLines{k}; 
-        lastMeaningfulLineWasBlank = false;
+        finalOutputLines{finalLineCount} = currentLineContent; 
     end
 end
 beautifulLines = finalOutputLines(1:finalLineCount)'; 
 
+
 % --- Optional: Align Assignments ---
-if options.AlignAssignments && ~isempty(beautifulLines)
-    beautifulLines = alignAssignmentBlocksInternal(beautifulLines, options);
+if options.AlignAssignments && ~isempty(beautifulLines) % beautifulLines is cellstr here
+    % alignAssignmentBlocksInternal needs to be adapted to use tempBeautifulLines (structs)
+    % For now, it will operate on 'beautifulLines' (cellstr) and thus re-parse.
+    % TODO: Refactor alignAssignmentBlocksInternal to accept tempBeautifulLines (struct array)
+    beautifulLines = alignAssignmentBlocksInternal(beautifulLines, options, tempBeautifulLines); % Pass structs
 end
 
 % --- Optional: Format Arguments Blocks ---
-% FIXED: Added call to format arguments blocks if option is enabled
-if options.FormatArgumentsBlock && ~isempty(beautifulLines)
-    beautifulLines = applyArgumentsBlockFormatting(beautifulLines, options, indentChar, indentUnit);
+if options.FormatArgumentsBlock && ~isempty(beautifulLines) % beautifulLines is cellstr here
+    % applyArgumentsBlockFormatting needs to be adapted
+    % TODO: Refactor applyArgumentsBlockFormatting to accept tempBeautifulLines (struct array)
+    beautifulLines = applyArgumentsBlockFormatting(beautifulLines, options, indentChar, indentUnit, tempBeautifulLines); % Pass structs
 end
 
 
@@ -629,155 +709,161 @@ end
 if strcmpi(options.OutputFormat, 'char')
     beautifulCode = strjoin(beautifulLines, sprintf('\n')); 
 else 
-    beautifulCode = beautifulLines; 
+    beautifulCode = beautifulLines; % This is now a cellstr of formatted lines
 end
 end
 
 % --- Helper function to apply 'arguments' block formatting (NEW) ---
-function lines = applyArgumentsBlockFormatting(lines, options, indentChar, indentUnit)
-    if isempty(lines) || ~options.FormatArgumentsBlock % Redundant check, but safe
+% TODO: Modify to accept tempBeautifulLines structs for lines within the block
+function lines = applyArgumentsBlockFormatting(lines, options, indentChar, indentUnit, lineStructs)
+    if isempty(lines) || ~options.FormatArgumentsBlock 
         return; 
     end
-
-    outputLines = lines; % Work on a copy (or directly on lines if careful)
+    
+    outputLines = lines; % Work on a copy (cellstr)
     
     idx = 1;
     while idx <= length(outputLines)
-        currentLine = outputLines{idx};
-        % Use extractCodeAndCommentInternal to robustly find the first word
-        [codePartCurrent, ~] = extractCodeAndCommentInternal(strtrim(currentLine));
-        
-        firstWordCurrent = '';
-        tokensCurrent = regexp(codePartCurrent, '^\s*(\w+)', 'tokens', 'once');
-        if ~isempty(tokensCurrent)
-            firstWordCurrent = tokensCurrent{1};
-        end
+        % currentLine = outputLines{idx}; % This is a string
+        % currentLineStruct = lineStructs{idx}; % This would be the corresponding struct
 
+        % Use firstWord from lineStructs if available, otherwise parse
+        firstWordCurrent = '';
+        if idx <= length(lineStructs) && isfield(lineStructs{idx}, 'firstWord') && ...
+           ~lineStructs{idx}.isBlockCommentBoundaryStart && ~lineStructs{idx}.isBlockCommentContent
+            firstWordCurrent = lineStructs{idx}.firstWord;
+        else % Fallback for lines not in lineStructs (e.g. if called independently) or block comments
+            [codePartCurrentFallback, ~] = extractCodeAndCommentInternal(strtrim(outputLines{idx}));
+            tokensCurrentFallback = regexp(codePartCurrentFallback, '^\s*(\w+)', 'tokens', 'once');
+            if ~isempty(tokensCurrentFallback)
+                firstWordCurrent = tokensCurrentFallback{1};
+            end
+        end
+        
+        % [codePartCurrent, ~] = extractCodeAndCommentInternal(strtrim(currentLine));
+        % tokensCurrent = regexp(codePartCurrent, '^\s*(\w+)', 'tokens', 'once');
         if strcmp(firstWordCurrent, 'arguments')
-            % Potential start of an arguments block
-            argBlockContentLinesInput = {}; % Cell array to hold lines for formatArgumentsBlockInternal
+            argBlockStartLineIndex = idx;
+            argBlockContentLineStructs = {}; % Cell array for structs
+            contentLineIndicesInOutputLines = [];
             
-            % Indices for lines that form the content of the arguments block
-            contentLineIndices = []; 
-            
-            nestingLevel = 1; % Start with nesting level 1 for the 'arguments' keyword
+            nestingLevel = 1; 
             foundEnd = false;
             
-            % Scan from the line *after* 'arguments'
             for j = (idx + 1) : length(outputLines)
-                lineJ = outputLines{j};
-                [codePartJ, ~] = extractCodeAndCommentInternal(strtrim(lineJ));
+                % Determine first word of line j, preferably from lineStructs
                 firstWordJ = '';
-                tokensJ = regexp(codePartJ, '^\s*(\w+)', 'tokens', 'once');
-                if ~isempty(tokensJ)
-                    firstWordJ = tokensJ{1};
+                isJBlockComment = false;
+                if j <= length(lineStructs) && isfield(lineStructs{j}, 'firstWord')
+                     isJBlockComment = lineStructs{j}.isBlockCommentBoundaryStart || lineStructs{j}.isBlockCommentContent;
+                     if ~isJBlockComment
+                        firstWordJ = lineStructs{j}.firstWord;
+                     end
+                end
+                if isempty(firstWordJ) && ~isJBlockComment % Fallback if not in lineStructs or it was empty
+                    [codePartJ_fallback, ~] = extractCodeAndCommentInternal(strtrim(outputLines{j}));
+                    tokensJ_fallback = regexp(codePartJ_fallback, '^\s*(\w+)', 'tokens', 'once');
+                    if ~isempty(tokensJ_fallback)
+                        firstWordJ = tokensJ_fallback{1};
+                    end
                 end
 
-                % This simple model assumes 'end' directly closes 'arguments'.
-                % It doesn't handle complex nesting of other 'end'-using blocks
-                % *inside* an arguments definition line (which is rare/invalid).
                 if strcmp(firstWordJ, 'arguments')
-                    % This would be invalid MATLAB (nested arguments blocks)
-                    % Or, it could be a comment 'arguments % arguments'
-                    % For simplicity, we assume valid MATLAB structure.
-                    % If truly nested, this logic might break.
                     nestingLevel = nestingLevel + 1; 
                 elseif strcmp(firstWordJ, 'end')
                     nestingLevel = nestingLevel - 1;
                     if nestingLevel == 0
-                        % Found the matching 'end' for our 'arguments' block.
-                        % Content lines are from (idx + 1) to (j - 1).
-                        if (j-1) >= (idx+1) % Check if there are any content lines
-                            contentLineIndices = (idx+1):(j-1);
-                            argBlockContentLinesInput = outputLines(contentLineIndices);
-                        else
-                            argBlockContentLinesInput = {}; % Empty arguments block
-                        end
-                        
-                        if ~isempty(argBlockContentLinesInput) || true % Process even if empty to handle structure
-                            formattedContent = formatArgumentsBlockInternal(argBlockContentLinesInput, options, indentChar, indentUnit);
-                            
-                            % Replace in outputLines
-                            for k_block = 1:length(formattedContent)
-                                outputLines{contentLineIndices(k_block)} = formattedContent{k_block};
+                        if (j-1) >= (idx+1) 
+                            contentLineIndicesInOutputLines = (idx+1):(j-1);
+                            % Collect corresponding structs for formatArgumentsBlockInternal
+                            for k_struct = 1:length(contentLineIndicesInOutputLines)
+                                line_idx_in_structs = contentLineIndicesInOutputLines(k_struct);
+                                if line_idx_in_structs <= length(lineStructs)
+                                    argBlockContentLineStructs{end+1} = lineStructs{line_idx_in_structs};
+                                else
+                                    % Fallback: create a minimal struct if not found (should not happen in normal flow)
+                                    dummyStruct = struct('codePart', strtrim(outputLines{line_idx_in_structs}), 'commentPart', '', 'effectiveIndentString', '');
+                                    [dummyStruct.codePart, dummyStruct.commentPart] = extractCodeAndCommentInternal(dummyStruct.codePart);
+                                    dummyStruct.effectiveIndentString = regexp(outputLines{line_idx_in_structs}, '^\s*', 'match', 'once');
+                                    argBlockContentLineStructs{end+1} = dummyStruct;
+                                end
                             end
                         end
                         
-                        idx = j; % Continue scanning from this 'end' line
+                        % Pass cell array of structs to formatArgumentsBlockInternal
+                        formattedContentCellStr = formatArgumentsBlockInternal(argBlockContentLineStructs, options, indentChar, indentUnit);
+                        
+                        for k_block = 1:length(formattedContentCellStr)
+                            outputLines{contentLineIndicesInOutputLines(k_block)} = formattedContentCellStr{k_block};
+                            % Also update lineStructs if it's being used as the primary source later
+                            % lineStructs{contentLineIndicesInOutputLines(k_block)}.formattedLine = formattedContentCellStr{k_block};
+                        end
+                        
+                        idx = j; 
                         foundEnd = true;
-                        break; % Exit inner loop (j), 'arguments' block processed
+                        break; 
                     end
                 end
-                % If not 'arguments' or 'end', it's a content line (or comment)
-                % to be collected if we were doing it differently, but here we just
-                % identify the block boundaries and extract lines by slice.
-            end % end inner loop (j)
-            
+            end 
             if ~foundEnd
-                % No matching 'end' found for 'arguments' block.
-                % The 'arguments' line at outputLines{idx} is left as is.
-                % The outer loop will continue from idx + 1.
-                % warning('code_beautifier:ArgumentsBlockNotClosed', 'An "arguments" block starting on line %d (approx) was not properly closed with "end". Formatting for this block skipped.', idx);
+                % warning(...);
             end
         end
-        idx = idx + 1; % Move to next line in outer loop
+        idx = idx + 1; 
     end
-    lines = outputLines; % Return the modified lines
+    lines = outputLines; 
 end
 
 
 % --- Helper function to format 'arguments' blocks ---
-function formattedBlockLines = formatArgumentsBlockInternal(blockLines, options, indentChar, indentUnit) %#ok<INUSD>
-% indentChar and indentUnit are passed for potential future use, not currently used for overall block indent.
-
-if isempty(blockLines)
-    formattedBlockLines = {};
+% Now accepts a cell array of lineData structs
+function formattedBlockLinesCellStr = formatArgumentsBlockInternal(blockLineStructs, options, indentChar, indentUnit) %#ok<INUSD>
+if isempty(blockLineStructs)
+    formattedBlockLinesCellStr = {};
     return;
 end
 
-parsedArgs = struct('name', {}, 'sizeClass', {}, 'validators', {}, ...
-    'defaultValue', {}, 'hasDefaultValue', {}, 'comment', {}, 'originalLine', {}, ... % FIXED: Added hasDefaultValue
-    'isCommentOnly', {}, 'indentStr', {});
+parsedArgs = repmat(struct(...
+    'name', '', 'sizeClass', '', 'validators', '', ...
+    'defaultValue', '', 'hasDefaultValue', false, 'comment', '', ...
+    'originalLineContent', '', 'isCommentOnly', false, 'baseIndentStr', ''), ...
+    length(blockLineStructs), 1);
 
-namePattern = '^\s*([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)';
-sizeClassPattern = '\s*((?:\([^\)]*?\))?\s*[a-zA-Z_]\w*)';
-validatorsPattern = '\s*(\{[^\}]*\})';
-% defaultValuePattern = '\s*=\s*(.+)'; % Original: greedy, requires something after =
-defaultValuePattern = '\s*=\s*(.*)';   % Changed to .*: allows "name =" (empty default) to be captured
+for i = 1:length(blockLineStructs)
+    currentLineStruct = blockLineStructs{i};
+    parsedArgs(i).originalLineContent = currentLineStruct.trimmedOriginalLine; % Or .formattedLine if it's post-main loop
+    parsedArgs(i).baseIndentStr = currentLineStruct.effectiveIndentString; % This is the indent of the block itself
+    
+    % Use pre-parsed codePart and commentPart from the struct
+    currentCode = currentLineStruct.codePart; 
+    parsedArgs(i).comment = currentLineStruct.commentPart;
 
-for i = 1:length(blockLines)
-    line = blockLines{i};
-    parsedArgs(i).originalLine = line;
-    parsedArgs(i).isCommentOnly = false;
-    parsedArgs(i).hasDefaultValue = false; % FIXED: Initialize hasDefaultValue
-
-    leadingWhitespace = regexp(line, '^\s*', 'match', 'once');
-    parsedArgs(i).indentStr = leadingWhitespace;
-
-    trimmedLine = strtrim(line);
-
-    if isempty(trimmedLine)
-        parsedArgs(i).name = ''; 
-        parsedArgs(i).comment = ''; 
+    if isempty(currentCode) && ~isempty(parsedArgs(i).comment) && startsWith(strtrim(parsedArgs(i).comment),'%')
+         % Check if the original trimmed line was purely a comment (e.g. '% just a comment')
+         % or if codePart became empty due to some processing error before.
+         % If currentLineStruct.codePart was truly empty from extractCodeAndCommentInternal, this is a comment line.
+        if isempty(currentLineStruct.codePart) && startsWith(currentLineStruct.trimmedOriginalLine,'%')
+            parsedArgs(i).isCommentOnly = true;
+        end
+    end
+    if parsedArgs(i).isCommentOnly
+        continue; % Skip further parsing for comment-only lines
+    end
+    
+    % If the line was not a comment, but codePart is empty (e.g. blank line struct)
+    if isempty(currentCode)
         continue;
     end
 
-    if startsWith(trimmedLine, '%')
-        parsedArgs(i).isCommentOnly = true;
-        parsedArgs(i).comment = trimmedLine; 
-        continue;
-    end
-
-    [codePart, commentPart] = extractCodeAndCommentInternal(trimmedLine); 
-    parsedArgs(i).comment = commentPart;
-    currentCode = codePart; 
+    namePattern = '^\s*([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)';
+    sizeClassPattern = '\s*((?:\([^\)]*?\))?\s*[a-zA-Z_]\w*)';
+    validatorsPattern = '\s*(\{[^\}]*\})';
+    defaultValuePattern = '\s*=\s*(.*)';
 
     nameMatch = regexp(currentCode, namePattern, 'tokens', 'once');
     if ~isempty(nameMatch)
         parsedArgs(i).name = strtrim(nameMatch{1});
         currentCode = currentCode(length(nameMatch{1})+1:end);
-    else
-        parsedArgs(i).name = ''; 
     end
     currentCode = strtrim(currentCode); 
 
@@ -785,8 +871,6 @@ for i = 1:length(blockLines)
     if ~isempty(sizeClassMatch)
         parsedArgs(i).sizeClass = strtrim(sizeClassMatch{1});
         currentCode = regexprep(currentCode, ['^', regexptranslate('escape', parsedArgs(i).sizeClass)], '', 'once');
-    else
-        parsedArgs(i).sizeClass = '';
     end
     currentCode = strtrim(currentCode);
 
@@ -794,28 +878,17 @@ for i = 1:length(blockLines)
     if ~isempty(validatorsMatch)
         parsedArgs(i).validators = strtrim(validatorsMatch{1});
         currentCode = regexprep(currentCode, ['^', regexptranslate('escape', parsedArgs(i).validators)], '', 'once');
-    else
-        parsedArgs(i).validators = '';
     end
     currentCode = strtrim(currentCode);
 
-    % FIXED: Refined default value parsing
     if startsWith(currentCode, '=')
-        parsedArgs(i).hasDefaultValue = true; % Mark that '=' token was present
+        parsedArgs(i).hasDefaultValue = true; 
         defaultMatch = regexp(currentCode, defaultValuePattern, 'tokens', 'once');
-        % defaultMatch will be non-empty if pattern matches.
-        % defaultMatch{1} can be an empty char if "name =" due to (.*)
         if ~isempty(defaultMatch) 
             parsedArgs(i).defaultValue = strtrim(defaultMatch{1});
         else
-            % This case should ideally not be reached if startsWith '=' and pattern is '=\s*(.*)'
-            % unless currentCode is just '=' and regex engine behaves unexpectedly.
-            % For safety, ensure defaultValue is set if hasDefaultValue is true.
             parsedArgs(i).defaultValue = ''; 
         end
-    else
-        % No default value part, .hasDefaultValue remains false, .defaultValue can be empty.
-        parsedArgs(i).defaultValue = ''; 
     end
 end
 
@@ -824,55 +897,55 @@ maxSizeClassLen = 0;
 maxValidatorsLen = 0;
 
 for i = 1:length(parsedArgs)
-    if parsedArgs(i).isCommentOnly || isempty(parsedArgs(i).name) 
+    if parsedArgs(i).isCommentOnly || isempty(parsedArgs(i).name)
         continue;
     end
     maxNameLen = max(maxNameLen, length(parsedArgs(i).name));
-    if ~isempty(parsedArgs(i).sizeClass)
-        maxSizeClassLen = max(maxSizeClassLen, length(parsedArgs(i).sizeClass));
-    end
-    if ~isempty(parsedArgs(i).validators)
-        maxValidatorsLen = max(maxValidatorsLen, length(parsedArgs(i).validators));
-    end
+    maxSizeClassLen = max(maxSizeClassLen, length(parsedArgs(i).sizeClass));
+    maxValidatorsLen = max(maxValidatorsLen, length(parsedArgs(i).validators));
 end
 
-formattedBlockLines = cell(size(blockLines));
+formattedBlockLinesCellStr = cell(length(blockLineStructs), 1);
 for i = 1:length(parsedArgs)
     if parsedArgs(i).isCommentOnly
-        formattedBlockLines{i} = [parsedArgs(i).indentStr, parsedArgs(i).comment];
+        % Use baseIndentStr (indent of the arguments block itself) + the comment content
+        % The comment content from struct already includes its original relative spacing/formatting.
+        formattedBlockLinesCellStr{i} = [parsedArgs(i).baseIndentStr, parsedArgs(i).comment];
         continue;
     end
-    if isempty(parsedArgs(i).name) && isempty(parsedArgs(i).comment)
-        formattedBlockLines{i} = parsedArgs(i).indentStr; 
+    
+    % Handle lines that were not comments but did not parse a name (e.g., '(Repeating)...' or malformed)
+    % Use their original content with the block's base indent.
+    if isempty(parsedArgs(i).name)
+        formattedBlockLinesCellStr{i} = [parsedArgs(i).baseIndentStr, parsedArgs(i).originalLineContent];
         continue;
     end
 
     lineParts = {};
-    lineParts{end+1} = parsedArgs(i).indentStr;
+    lineParts{end+1} = parsedArgs(i).baseIndentStr; % Start with the block's base indent
 
-    nameStr = parsedArgs(i).name;
+    nameStr = parsedArgs(i).name; % Already trimmed
     namePadding = maxNameLen - length(nameStr);
     lineParts{end+1} = [nameStr, repmat(' ', 1, namePadding)];
 
-    if ~isempty(parsedArgs(i).sizeClass)
-        sizeClassStr = parsedArgs(i).sizeClass;
+    sizeClassStr = parsedArgs(i).sizeClass; % Already trimmed or empty
+    if ~isempty(sizeClassStr)
         sizeClassPadding = maxSizeClassLen - length(sizeClassStr);
         lineParts{end+1} = [' ', sizeClassStr, repmat(' ', 1, sizeClassPadding)];
     elseif maxSizeClassLen > 0 
         lineParts{end+1} = repmat(' ', 1, maxSizeClassLen + 1); 
     end
 
-    if ~isempty(parsedArgs(i).validators)
-        validatorsStr = parsedArgs(i).validators;
+    validatorsStr = parsedArgs(i).validators; % Already trimmed or empty
+    if ~isempty(validatorsStr)
         validatorsPadding = maxValidatorsLen - length(validatorsStr);
         lineParts{end+1} = [' ', validatorsStr, repmat(' ', 1, validatorsPadding)];
     elseif maxValidatorsLen > 0 
         lineParts{end+1} = repmat(' ', 1, maxValidatorsLen + 1); 
     end
 
-    % FIXED: Use hasDefaultValue flag for reconstruction
     if parsedArgs(i).hasDefaultValue
-        defaultStr = parsedArgs(i).defaultValue; % This can be an empty char for "name ="
+        defaultStr = parsedArgs(i).defaultValue; % Already trimmed
         if options.SpaceAroundOperators
             lineParts{end+1} = [' = ', defaultStr];
         else
@@ -881,172 +954,161 @@ for i = 1:length(parsedArgs)
     end
 
     fullLine = strjoin(lineParts, '');
-    if ~all(isspace(fullLine)) 
-        fullLine = regexprep(fullLine, '\s+$', '');
-    end
+    fullLine = regexprep(fullLine, '\s+$', ''); % Trim trailing space from assembled parts
 
-    if ~isempty(parsedArgs(i).comment)
-        if ~isempty(strtrim(fullLine)) 
-            fullLine = [fullLine, parsedArgs(i).comment]; 
+    commentStr = parsedArgs(i).comment; % Already processed
+    if ~isempty(commentStr)
+        if ~isempty(strtrim(fullLine)) % Check if fullLine is not just whitespace
+             % Ensure a space before comment if line has content.
+             % commentStr already has leading ' % ' or similar if it's not empty.
+            fullLine = [fullLine, commentStr]; 
         else 
-            fullLine = [fullLine, strtrim(parsedArgs(i).comment)]; 
+            % If fullLine is empty/whitespace, use baseIndent + trimmed comment
+            fullLine = [parsedArgs(i).baseIndentStr, strtrim(commentStr)];
         end
     end
-
-    formattedBlockLines{i} = fullLine; 
+    formattedBlockLinesCellStr{i} = fullLine; 
 end
 end
 
 % --- Helper function to align assignment blocks ---
-function lines = alignAssignmentBlocksInternal(lines, options)
-if isempty(lines), return; end
+% TODO: Modify to accept tempBeautifulLines (structs) and update structs' formattedLine
+function lines = alignAssignmentBlocksInternal(lines, options, lineStructs)
+    if isempty(lines), return; end 
 
 blockLinesIndices = [];      
-blockLinesContent = {};      
-blockLinesIndents = {};      
+blockItemsToFormat = {}; 
 maxLhsLen = 0;               
 
-indentKeywordsPattern = ['^\s*(if|for|while|switch|try|parfor|function|classdef|properties|methods|events|arguments)\b'];
+% indentKeywords is accessible here due to nested function scope.
 
-resetBlockState = @() deal([], {}, {}, 0); 
+resetBlockState = @() deal([], {}, 0); 
 
 for i = 1:length(lines) 
-    currentLine = lines{i};
-    trimmedLine = strtrim(currentLine); 
-    currentIndent = regexp(currentLine, '^\s*', 'match', 'once'); 
-
-    if isempty(trimmedLine)
-        if ~isempty(blockLinesIndices) 
-            lines = applyAlignmentToBlock(lines, blockLinesContent, maxLhsLen, options); 
+    currentLineStruct = lineStructs{i}; 
+    
+    if currentLineStruct.isBlockCommentBoundaryStart || currentLineStruct.isBlockCommentContent || currentLineStruct.isBlankLine || currentLineStruct.formattingSkipped
+        if ~isempty(blockItemsToFormat)
+            lines = applyAlignmentToBlockInternal(lines, blockItemsToFormat, maxLhsLen, options);
         end
-        [blockLinesIndices, blockLinesContent, blockLinesIndents, maxLhsLen] = resetBlockState(); 
-        continue; 
+        [blockLinesIndices, blockItemsToFormat, maxLhsLen] = resetBlockState();
+        continue;
     end
 
-    isFullCommentLine = startsWith(trimmedLine, '%'); 
+    currentIndent = currentLineStruct.effectiveIndentString;
+    codePart = currentLineStruct.processedCodePart; 
+    commentPart = currentLineStruct.commentPart;   
+    
+    isFullCommentLine = isempty(codePart) && ~isempty(commentPart) && startsWith(strtrim(commentPart),'%');
     isAssignable = false; 
-    lhs = ''; rhs = ''; commentPartForAssignment = ''; equalsIndexInCode = -1; 
+    lhs = ''; rhs = ''; 
+    
+    if ~isFullCommentLine && ~isempty(codePart)
+        % Check if the firstWord of the struct indicates it's a block control keyword line.
+        % currentLineStruct.firstWord is non-empty only if it's one of allBlockCtrlKeywords.
+        isKeywordLine = ~isempty(currentLineStruct.firstWord); 
 
-    if ~isFullCommentLine
-        [codePart, commentPartExtracted] = extractCodeAndCommentInternal(trimmedLine); 
-        isKeywordLine = ~isempty(regexp(codePart, indentKeywordsPattern, 'once')); 
-
-        if ~isKeywordLine && ~endsWith(strtrim(codePart), '...')
-            tempCodeForEquals = codePart;
-            inSingleQuote = false; inDoubleQuote = false; 
-            tempEqualsIndex = -1; 
-            charIdx = 1; % Initialize charIdx for the while loop
-            while charIdx <= length(tempCodeForEquals) 
-                char = tempCodeForEquals(charIdx);
-                if char == '''' 
-                    if charIdx+1 <= length(tempCodeForEquals) && tempCodeForEquals(charIdx+1) == '''' 
-                        charIdx = charIdx + 1; 
-                    elseif ~inDoubleQuote 
-                        inSingleQuote = ~inSingleQuote;
-                    end
-                elseif char == '"' 
-                    if charIdx+1 <= length(tempCodeForEquals) && tempCodeForEquals(charIdx+1) == '"' 
-                        charIdx = charIdx + 1; 
-                    elseif ~inSingleQuote 
-                        inDoubleQuote = ~inDoubleQuote;
-                    end
-                elseif char == '=' && ~inSingleQuote && ~inDoubleQuote 
+        if ~isKeywordLine && ~endsWith(codePart, '...')
+            equalsIndices = strfind(codePart, '=');
+            finalEqualsIndex = -1;
+            if ~isempty(equalsIndices)
+                % Filter out ==, >=, <=, ~=
+                tempCode = codePart;
+                for eqIdx = equalsIndices
                     isComparison = false;
-                    if charIdx > 1 && ismember(tempCodeForEquals(charIdx-1), {'=', '~', '<', '>'}) 
+                    if eqIdx > 1 && ismember(tempCode(eqIdx-1), {'=', '~', '<', '>'})
                         isComparison = true;
                     end
-                    if charIdx < length(tempCodeForEquals) && tempCodeForEquals(charIdx+1) == '=' 
+                    if eqIdx < length(tempCode) && tempCode(eqIdx+1) == '='
                         isComparison = true;
                     end
                     if ~isComparison
-                        tempEqualsIndex = charIdx; 
-                        break;
+                        finalEqualsIndex = eqIdx;
+                        break; % Take the first valid one
                     end
                 end
-                charIdx = charIdx + 1; % Increment charIdx
             end
-            equalsIndexInCode = tempEqualsIndex;
 
-            if equalsIndexInCode > 0 
+            if finalEqualsIndex > 0
                 isAssignable = true;
-                lhs = strtrim(codePart(1:equalsIndexInCode-1)); 
-                rhs = strtrim(codePart(equalsIndexInCode+1:end)); 
-                commentPartForAssignment = commentPartExtracted; 
+                lhs = strtrim(codePart(1:finalEqualsIndex-1));
+                rhs = strtrim(codePart(finalEqualsIndex+1:end));
             end
         end
     end
 
     if isAssignable
-        if isempty(blockLinesIndices) || strcmp(currentIndent, blockLinesIndents{end})
+        if isempty(blockLinesIndices) || strcmp(currentIndent, blockItemsToFormat{end}.indentStr)
             blockLinesIndices(end+1) = i; 
-            blockLinesContent{end+1} = struct('type', 'assignment', ... 
-                'lhs', lhs, 'rhs', rhs, ...
-                'comment', commentPartForAssignment, ...
-                'originalIndex', i, 'indentStr', currentIndent);
-            blockLinesIndents{end+1} = currentIndent; 
+            blockItemsToFormat{end+1} = struct('lhs', lhs, 'rhs', rhs, ...
+                'comment', commentPart, 'originalIndex', i, 'indentStr', currentIndent);
             maxLhsLen = max(maxLhsLen, length(lhs));
         else 
-            if ~isempty(blockLinesIndices) 
-                lines = applyAlignmentToBlock(lines, blockLinesContent, maxLhsLen, options);
+            if ~isempty(blockItemsToFormat)
+                lines = applyAlignmentToBlockInternal(lines, blockItemsToFormat, maxLhsLen, options);
             end
-            [blockLinesIndices, blockLinesContent, blockLinesIndents, maxLhsLen] = resetBlockState(); 
+            [blockLinesIndices, blockItemsToFormat, maxLhsLen] = resetBlockState(); 
             blockLinesIndices(end+1) = i;
-            blockLinesContent{end+1} = struct('type', 'assignment', ...
-                'lhs', lhs, 'rhs', rhs, ...
-                'comment', commentPartForAssignment, ...
-                'originalIndex', i, 'indentStr', currentIndent);
-            blockLinesIndents{end+1} = currentIndent;
+            blockItemsToFormat{end+1} = struct('lhs', lhs, 'rhs', rhs, ...
+                'comment', commentPart, 'originalIndex', i, 'indentStr', currentIndent);
             maxLhsLen = max(maxLhsLen, length(lhs));
         end
-    elseif isFullCommentLine
-        if ~isempty(blockLinesIndices) && strcmp(currentIndent, blockLinesIndents{end})
-            blockLinesIndices(end+1) = i;
-            blockLinesContent{end+1} = struct('type', 'comment', ...
-                'lineValue', lines{i}, ... 
-                'originalIndex', i, 'indentStr', currentIndent);
+    elseif isFullCommentLine % A line that is purely a comment
+        if ~isempty(blockItemsToFormat) && strcmp(currentIndent, blockItemsToFormat{end}.indentStr)
+            blockLinesIndices(end+1) = i; % Add its index
+            blockItemsToFormat{end+1} = struct('lhs', '', 'rhs', '', ... % Mark as non-assignment
+                'comment', lines{i}, 'originalIndex', i, 'indentStr', currentIndent, 'isCommentOnly', true);
         else 
-            if ~isempty(blockLinesIndices) 
-                lines = applyAlignmentToBlock(lines, blockLinesContent, maxLhsLen, options);
+            if ~isempty(blockItemsToFormat)
+                lines = applyAlignmentToBlockInternal(lines, blockItemsToFormat, maxLhsLen, options);
             end
-            [blockLinesIndices, blockLinesContent, blockLinesIndents, maxLhsLen] = resetBlockState(); 
+            [blockLinesIndices, blockItemsToFormat, maxLhsLen] = resetBlockState();
         end
-    else 
-        if ~isempty(blockLinesIndices) 
-            lines = applyAlignmentToBlock(lines, blockLinesContent, maxLhsLen, options);
+    else % Not assignable, not a full comment line continuing block: breaks the block
+        if ~isempty(blockItemsToFormat)
+            lines = applyAlignmentToBlockInternal(lines, blockItemsToFormat, maxLhsLen, options);
         end
-        [blockLinesIndices, blockLinesContent, blockLinesIndents, maxLhsLen] = resetBlockState(); 
+        [blockLinesIndices, blockItemsToFormat, maxLhsLen] = resetBlockState();
     end
 end
 
-if ~isempty(blockLinesIndices)
-    lines = applyAlignmentToBlock(lines, blockLinesContent, maxLhsLen, options);
+if ~isempty(blockItemsToFormat)
+    lines = applyAlignmentToBlockInternal(lines, blockItemsToFormat, maxLhsLen, options);
 end
 end
 
-function lines = applyAlignmentToBlock(lines, blockContent, maxLhsLen, options)
-if length(blockContent) < 1, return; end 
+% Renamed from applyAlignmentToBlock to avoid conflict, and to signify internal use
+function lines = applyAlignmentToBlockInternal(lines, blockItems, maxLhsLen, options)
+if isempty(blockItems), return; end
 
-for k = 1:length(blockContent) 
-    item = blockContent{k};
+for k = 1:length(blockItems) 
+    item = blockItems{k};
     idx = item.originalIndex; 
 
-    if strcmp(item.type, 'assignment') 
-        blockIndent = item.indentStr; 
-
-        numSpacesBeforeEquals = maxLhsLen - length(item.lhs);
-        spacesBeforeEqualsStr = repmat(' ', 1, numSpacesBeforeEquals); 
-
-        if options.SpaceAroundOperators 
-            newLine = [blockIndent, item.lhs, spacesBeforeEqualsStr, ' = ', item.rhs, item.comment];
-        else
-            newLine = [blockIndent, item.lhs, spacesBeforeEqualsStr, '=', item.rhs, item.comment];
-        end
-        lines{idx} = regexprep(newLine, '\s+$', ''); 
-    elseif strcmp(item.type, 'comment')
-        % Comments are preserved, no action needed here.
+    if isfield(item, 'isCommentOnly') && item.isCommentOnly
+        % This line is purely a comment within the alignment block, do not change it.
+        % lines{idx} = item.comment; % item.comment here would be the full original comment line
+        continue; 
     end
+    
+    % Only process if it's an actual assignment (i.e., has an LHS)
+    if isempty(item.lhs)
+        continue;
+    end
+
+    blockIndent = item.indentStr; 
+    numSpacesBeforeEquals = maxLhsLen - length(item.lhs);
+    spacesBeforeEqualsStr = repmat(' ', 1, numSpacesBeforeEquals); 
+
+    if options.SpaceAroundOperators 
+        newLine = [blockIndent, item.lhs, spacesBeforeEqualsStr, ' = ', item.rhs, item.comment];
+    else
+        newLine = [blockIndent, item.lhs, spacesBeforeEqualsStr, '=', item.rhs, item.comment];
+    end
+    lines{idx} = regexprep(newLine, '\s+$', ''); 
 end
 end
+
 
 
 function [codeP, commentP] = extractCodeAndCommentInternal(lineStr)
@@ -1143,7 +1205,7 @@ for i = 1:length(optionNames)
     if strcmpi(optName, 'StylePreset')
         continue; 
     end
-    value = defaultSettings.(optName); 
+    value = defaultSettings.(optName);
     if islogical(value)
         knownInfo.(optName).type = 'logical';
     elseif isnumeric(value)
