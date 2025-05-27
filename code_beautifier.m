@@ -644,8 +644,7 @@ for i = 1:length(lines) % Loop through each line of the input code.
             % `unary_fix_class_1`: Characters that can precede a unary operator (e.g., '(', '[', '=', etc.).
             % `pat_unary_fix_1`: Matches <preceding_char><one_or_more_spaces><+/-><operand_char>.
             % Result: <preceding_char><+/-><operand_char> (removes the unwanted space).
-            % Removed '=' from unary_fix_class_1 to prevent removing space after assignment, e.g. x = -5.
-            unary_fix_class_1 = '[\(\[\{,\s&|]'; 
+            unary_fix_class_1 = '[=\(\[\{,\s&|]';
             pat_unary_fix_1 = ['(', unary_fix_class_1, ')\s+([+\-])\s*(\w|[\.\(])'];
             processedCodePart = regexprep(processedCodePart, pat_unary_fix_1, '$1$2$3');
             fprintf('DEBUG_SO_UNARY1: line %d, after unary_fix_1: "%s"\n', i, processedCodePart);
@@ -655,15 +654,6 @@ for i = 1:length(lines) % Loop through each line of the input code.
             pat_unary_fix_2 = ['^([+\-])\s+(\w|[\.\(])'];
             processedCodePart = regexprep(processedCodePart, pat_unary_fix_2, '$1$2');
             fprintf('DEBUG_SO_UNARY2: line %d, after unary_fix_2: "%s"\n', i, processedCodePart);
-
-            % Correct spacing for lists of numbers like [1 -2 +3] or matrix rows [1 -2; 3 4]
-            % This pattern identifies a digit, followed by spaces, a +/- operator, more spaces, and another digit.
-            % It changes "N op N" (e.g., "1 - 2") to "N opN" (e.g., "1 -2").
-            % This is intended to run after general binary operator spacing and standard unary fixes.
-            pat_numeric_list_spacing_fix = '(\d)\s+([+\-])\s+(\d)';
-            rep_numeric_list_spacing_fix = '$1 $2$3'; 
-            processedCodePart = regexprep(processedCodePart, pat_numeric_list_spacing_fix, rep_numeric_list_spacing_fix);
-            fprintf('DEBUG_SO_NUM_LIST_FIX: line %d, after numeric_list_spacing_fix: "%s"\n', i, processedCodePart);
 
             % Fix scientific notation (e.g., "1 e - 5" -> "1e-5", or "1e + 5" -> "1e+5").
             % Handles cases where spaces might have been inserted around 'e'/'E' or the exponent's sign.
@@ -681,68 +671,26 @@ for i = 1:length(lines) % Loop through each line of the input code.
 
         % Ensure space after a semicolon if it's used as a separator within a statement (e.g., in matrix definitions like `[1; 2]`)
         processedCodePart = regexprep(processedCodePart, ';(\S)', '; $1');
-
-        % Explicitly trim processedCodePart after all modifications within this block
-        processedCodePart = strtrim(processedCodePart);
     end
 
     % --- Stage 6: Construct the Beautiful Line ---
-    % Refactored logic to explicitly manage trailing whitespace on the content part.
-    % processedCodePart at this point is assumed to be trimmed if it passed through Stage 5 modifications.
-    
-    finalProcessedCodePart = strtrim(processedCodePart); % Ensure it's trimmed.
-    contentPart = ''; % This will hold the code + comment part
-
-    % Debug logs for the inputs to contentPart assembly
-    fprintf('DEBUG_STAGE6_INPUTS: Line %d, finalProcessedCodePart: "%s"\n', i, finalProcessedCodePart);
-    fprintf('DEBUG_STAGE6_INPUTS: Line %d, commentPart: "%s"\n', i, commentPart);
-
-    if isempty(finalProcessedCodePart) && ~isempty(commentPart)
-        % Line is effectively comment-only
-        contentPart = commentPart;
-        % Normalize commentPart: trim trailing spaces, but handle " % " -> "%" or " %"
-        if strcmp(strtrim(contentPart), '%') 
-            contentPart = '%'; 
-        else
-            % For comments like " % my comment  " or " %   ", trim to " % my comment" or " %"
-            % This also handles cases like "% comment" effectively after strtrim from extractCodeAndCommentInternal
-            contentPart = regexprep(contentPart, '\s+$', ''); 
-        end
-    elseif ~isempty(finalProcessedCodePart) && ~isempty(commentPart)
-        % Code and comment
-        contentPart = [finalProcessedCodePart, commentPart]; % commentPart should have leading space if needed
-        contentPart = regexprep(contentPart, '\s+$', ''); % Trim after combining
-    elseif ~isempty(finalProcessedCodePart)
-        % Only code; finalProcessedCodePart is already trimmed and commentPart is empty.
-        contentPart = finalProcessedCodePart; 
-    else
-        % Line became effectively empty (was all whitespace or processed to empty)
-        contentPart = '';
+    % Assemble the indented code part and the (optional) comment part.
+    % Handles cases: only comment, code + comment, only code.
+        fprintf('DEBUG_PCP_BEFORE_TRIM: Line i=%d, raw processedCodePart: "%s"\n', i, processedCodePart);
+        fprintf('DEBUG_LINE_ASSEMBLY: Line i=%d, firstWord="%s"\n', i, firstWord);
+        fprintf('    currentIndentStr (len %d): "%s"\n', length(currentIndentStr), currentIndentStr);
+        fprintf('    processedCodePart (trimmed): "%s"\n', strtrim(processedCodePart)); % Use strtrim here
+        fprintf('    commentPart: "%s"\n', commentPart);
+        fprintf('    currentLineEffectiveIndentLevel used for currentIndentStr: %d\n', currentLineEffectiveIndentLevel);
+    if isempty(strtrim(processedCodePart)) && ~isempty(commentPart) % Line became comment-only after processing
+        tempBeautifulLines{i} = regexprep([currentIndentStr, commentPart], '\s+$', '');
+    elseif ~isempty(strtrim(processedCodePart)) && ~isempty(commentPart) % Code and comment
+        tempBeautifulLines{i} = regexprep([currentIndentStr, strtrim(processedCodePart), commentPart], '\s+$', '');
+    elseif ~isempty(strtrim(processedCodePart)) % Only code
+        tempBeautifulLines{i} = regexprep([currentIndentStr, strtrim(processedCodePart)], '\s+$', '');
+    else % Line became effectively empty (e.g. was just whitespace or processed to empty)
+        tempBeautifulLines{i} = '';
     end
-    
-    fprintf('DEBUG_STAGE6_CONTENT: Line %d, contentPart before indent: "%s"\n', i, contentPart);
-
-    % Assign to output lines
-    if isempty(contentPart) && isempty(currentIndentStr) % Truly empty line with no indent processing needed
-        % This handles lines that were purely whitespace and should remain so if not for indentation.
-        % However, if a line is blank, currentIndentStr might be applied by some other logic
-        % if it were not for this check. The goal is truly blank lines are '', not '    '.
-        % If originalLine was just spaces, and it becomes empty contentPart, it should be empty.
-        tempBeautifulLines{i} = ''; 
-    else
-        % If contentPart is empty but there's an indent (e.g. an empty line in an indented block that shouldn't be there)
-        % it will become `currentIndentStr` + `''`. This might be desired for some "empty indented lines".
-        % However, the post-processing step for blank lines handles collapsing and preserving,
-        % so an empty contentPart here should generally result in just the indent if the line isn't purely blank.
-        % The current post-processing handles '' as blank.
-        % If contentPart is truly empty (not just whitespace), it means no code or comment.
-        if isempty(contentPart)
-            tempBeautifulLines{i} = ''; % Make it truly empty to be handled by blank line post-processing
-        else
-            tempBeautifulLines{i} = [currentIndentStr, contentPart];
-        end
-    end
-    fprintf('DEBUG_STAGE6_FINAL_LINE: Line %d, tempBeautifulLines{i}: "%s"\n', i, tempBeautifulLines{i});
 
     % --- Stage 7: Update IndentLevel for NEXT line ---
     fprintf('DEBUG_PRE_INDENT_UPDATE: line %d, firstWord="%s", indentLevel before update (for next line)=%d\n', i, firstWord, indentLevel);
@@ -796,92 +744,36 @@ finalLineCount = 0;
 lastMeaningfulLineWasBlank = true; % True if the last non-empty line added to finalOutputLines was a blank line (or start of file).
 
 for k = 1:length(tempBeautifulLines) % Iterate through the initially processed lines
-% At the very start of the loop: for k = 1:length(tempBeautifulLines)
-    original_line_from_temp = tempBeautifulLines{k}; 
-    currentLineContent = strtrim(original_line_from_temp);
-    isCurrentLineBlank = isempty(currentLineContent);
+    currentLineContent = strtrim(tempBeautifulLines{k}); % Get content of current processed line
+    isCurrentLineBlank = isempty(currentLineContent); % Check if it's blank after initial processing
 
-    % === START DEBUG BLOCK 1 ===
-    fprintf('DEBUG_POSTPROC_BLANKLINES_ITER_START: Iteration k=%d\n', k);
-    fprintf('DEBUG_POSTPROC_BLANKLINES_VARS: original_tempLineUTF8=[%s]\n', native2unicode(uint8(original_line_from_temp), 'UTF-8')); % Log with explicit UTF-8 conversion for clarity
-    fprintf('DEBUG_POSTPROC_BLANKLINES_VARS: currentLineContentUTF8=[%s]\n', native2unicode(uint8(currentLineContent), 'UTF-8'));
-    fprintf('DEBUG_POSTPROC_BLANKLINES_VARS: isCurrentLineBlank=%d\n', isCurrentLineBlank);
-    fprintf('DEBUG_POSTPROC_BLANKLINES_VARS: finalLineCount_before_min_blank_logic=%d\n', finalLineCount);
-    fprintf('DEBUG_POSTPROC_BLANKLINES_VARS: options.MinBlankLinesBeforeBlock=%d\n', options.MinBlankLinesBeforeBlock);
-    fprintf('DEBUG_POSTPROC_BLANKLINES_VARS: options.PreserveBlankLines=%d\n', options.PreserveBlankLines);
-    fprintf('DEBUG_POSTPROC_BLANKLINES_VARS: lastMeaningfulLineWasBlank_before_min_blank_logic=%d\n', lastMeaningfulLineWasBlank);
-    % === END DEBUG BLOCK 1 ===
-
-    % MinBlankLinesBeforeBlock logic itself
+    % MinBlankLinesBeforeBlock logic: Ensure N blank lines before major block keywords.
+    % Only apply if MinBlankLinesBeforeBlock > 0, current line is not blank, and not at the very start of the file.
     if options.MinBlankLinesBeforeBlock > 0 && ~isCurrentLineBlank && finalLineCount > 0
-        % === START DEBUG BLOCK 2 ===
-        fprintf('DEBUG_POSTPROC_BLANKLINES_MINBLANK_CONDITIONS: Conditions MET for currentLineContentUTF8=[%s]\n', native2unicode(uint8(currentLineContent), 'UTF-8'));
-        % === END DEBUG BLOCK 2 ===
-        
-        firstWordPattern_for_blank_check = ['^\s*(', strjoin(indentKeywords, '|'), ')\b']; % Corrected: use \b
-        [codeP_for_blank_check, ~] = extractCodeAndCommentInternal(currentLineContent); 
-        firstWordToken_for_blank_check = regexp(codeP_for_blank_check, firstWordPattern_for_blank_check, 'tokens', 'once');
+        % Check if current line starts a new block (e.g., 'if', 'for', 'function')
+        [codeP_for_blank_check, ~] = extractCodeAndCommentInternal(currentLineContent); % Simple re-extract for keyword check
+        firstWordToken_for_blank_check = regexp(codeP_for_blank_check, ['^\s*(', strjoin(indentKeywords, '|'), ')\b'], 'tokens', 'once');
 
-        % === START DEBUG BLOCK 3 ===
-        fprintf('DEBUG_POSTPROC_BLANKLINES_MINBLANK_KEYWORD: codeP_for_blank_checkUTF8=[%s]\n', native2unicode(uint8(codeP_for_blank_check), 'UTF-8'));
-        if ~isempty(firstWordToken_for_blank_check)
-            fprintf('DEBUG_POSTPROC_BLANKLINES_MINBLANK_KEYWORD: firstWordToken={%s}\n', firstWordToken_for_blank_check{1});
-        else
-            fprintf('DEBUG_POSTPROC_BLANKLINES_MINBLANK_KEYWORD: firstWordToken is EMPTY\n');
-        end
-        % === END DEBUG BLOCK 3 ===
-
-        if ~isempty(firstWordToken_for_blank_check)
+        if ~isempty(firstWordToken_for_blank_check) % It's a block-starting keyword
             blanksNeeded = options.MinBlankLinesBeforeBlock;
-            % === START DEBUG BLOCK 4 ===
-            fprintf('DEBUG_POSTPROC_BLANKLINES_MINBLANK_CALC: Keyword found! blanksNeeded=%d\n', blanksNeeded);
-            % === END DEBUG BLOCK 4 ===
-            
+            % Count existing blank lines immediately preceding this point in `finalOutputLines`.
             numExistingBlanks = 0;
-            temp_finalLineCount_for_debug = finalLineCount; 
-            if temp_finalLineCount_for_debug > 0 
-                % === START DEBUG BLOCK 5 ===
-                fprintf('DEBUG_POSTPROC_BLANKLINES_MINBLANK_CALC: Checking existing blanks: current_finalLineCount=%d. Looking from index %d down to 1.\n', temp_finalLineCount_for_debug, temp_finalLineCount_for_debug);
-                % === END DEBUG BLOCK 5 ===
-                for j = temp_finalLineCount_for_debug:-1:1 
-                    line_to_check_for_blank = finalOutputLines{j}; 
-                    is_prev_line_blank = isempty(strtrim(line_to_check_for_blank));
-                    % === START DEBUG BLOCK 6 (inside inner loop) ===
-                    fprintf('DEBUG_POSTPROC_BLANKLINES_MINBLANK_CALC:   Checking finalOutputLines{%d}UTF8=[%s], isBlank=%d\n', j, native2unicode(uint8(line_to_check_for_blank), 'UTF-8'), is_prev_line_blank);
-                    % === END DEBUG BLOCK 6 ===
-                    if is_prev_line_blank
+            if finalLineCount > 0
+                for j = finalLineCount:-1:1 % Look backwards from last added line
+                    if isempty(strtrim(finalOutputLines{j}))
                         numExistingBlanks = numExistingBlanks + 1;
                     else
-                        break; 
+                        break; % Hit a non-blank line
                     end
                 end
-            else
-                 % === START DEBUG BLOCK 7 ===
-                 fprintf('DEBUG_POSTPROC_BLANKLINES_MINBLANK_CALC: Not checking existing blanks as current_finalLineCount is 0.\n');
-                 % === END DEBUG BLOCK 7 ===
             end
-            % === START DEBUG BLOCK 8 ===
-            fprintf('DEBUG_POSTPROC_BLANKLINES_MINBLANK_CALC: numExistingBlanks found = %d\n', numExistingBlanks);
-            % === END DEBUG BLOCK 8 ===
 
-            lines_to_add_count = max(0, blanksNeeded - numExistingBlanks);
-            % === START DEBUG BLOCK 9 ===
-            fprintf('DEBUG_POSTPROC_BLANKLINES_MINBLANK_ADD: lines_to_add_count = %d\n', lines_to_add_count);
-            % === END DEBUG BLOCK 9 ===
-
-            for bl = 1:lines_to_add_count
+            % Add missing blank lines.
+            for bl = 1:max(0, blanksNeeded - numExistingBlanks)
                 finalLineCount = finalLineCount + 1;
-                finalOutputLines{finalLineCount} = ''; 
-                lastMeaningfulLineWasBlank = true; 
-                % === START DEBUG BLOCK 10 (inside inner loop) ===
-                fprintf('DEBUG_POSTPROC_BLANKLINES_MINBLANK_ADD: Added a blank line. new_finalLineCount=%d. lastMeaningfulLineWasBlank=true.\n', finalLineCount);
-                % === END DEBUG BLOCK 10 ===
+                finalOutputLines{finalLineCount} = '';
             end
         end
-    else
-        % === START DEBUG BLOCK 11 (else branch) ===
-        fprintf('DEBUG_POSTPROC_BLANKLINES_MINBLANK_CONDITIONS: Conditions NOT MET. MinBlankLinesBeforeBlock=%d, isCurrentLineBlank=%d, finalLineCount=%d\n', options.MinBlankLinesBeforeBlock, isCurrentLineBlank, finalLineCount);
-        % === END DEBUG BLOCK 11 ===
     end
 
     % PreserveBlankLines logic
@@ -891,25 +783,16 @@ for k = 1:length(tempBeautifulLines) % Iterate through the initially processed l
                 finalLineCount = finalLineCount + 1;
                 finalOutputLines{finalLineCount} = ''; % Add the blank line
                 lastMeaningfulLineWasBlank = true;
-                fprintf('DEBUG_POSTPROC_PRESERVEBLANKS: Adding a preserved blank line. finalLineCount=%d\n', finalLineCount);
-            else
-                fprintf('DEBUG_POSTPROC_PRESERVEBLANKS: Skipping redundant blank line.\n');
             end
+            % else: current is blank, and previous was also blank (or start of file), so collapse/skip.
         else
-            fprintf('DEBUG_POSTPROC_PRESERVEBLANKS: Not preserving blank line (PreserveBlankLines=false).\n');
+            % Not preserving blank lines, so skip adding this blank line.
         end
     else % Current line is not blank
         finalLineCount = finalLineCount + 1;
         finalOutputLines{finalLineCount} = tempBeautifulLines{k}; % Add the contentful line
         lastMeaningfulLineWasBlank = false;
-        fprintf('DEBUG_POSTPROC_ADDCONTENTLINE: Added content line: "%s". finalLineCount=%d\n', native2unicode(uint8(tempBeautifulLines{k}), 'UTF-8'), finalLineCount);
     end
-    
-    % At the very end of the loop iteration
-    % === START DEBUG BLOCK 12 ===
-    fprintf('DEBUG_POSTPROC_BLANKLINES_ITER_END: Iteration k=%d, finalLineCount_after_line_process=%d, lastMeaningfulLineWasBlank_after_line_process=%d\n', k, finalLineCount, lastMeaningfulLineWasBlank);
-    fprintf('DEBUG_POSTPROC_BLANKLINES_ITER_END: --- End of Iteration k=%d ---\n', k);
-    % === END DEBUG BLOCK 12 ===
 end
 beautifulLines = finalOutputLines(1:finalLineCount)'; % Trim pre-allocated cell array
 
@@ -1076,10 +959,8 @@ for i = 1:length(blockLines)
     % 1. Extract Argument Name
     nameMatch = regexp(currentCode, namePattern, 'tokens', 'once');
     if ~isempty(nameMatch)
-        originalNameMatch = nameMatch{1}; % Store original match for advancing currentCode
-        tempName = strrep(originalNameMatch, char(160), ' '); % Replace non-breaking space
-        parsedArgs(i).name = strtrim(tempName); % Final trim
-        currentCode = currentCode(length(originalNameMatch)+1:end); % Use length of original match
+        parsedArgs(i).name = strtrim(nameMatch{1});
+        currentCode = currentCode(length(nameMatch{1})+1:end);
     else
         % If no name, and not a comment/blank line, it's a pass-through line
         parsedArgs(i).name = '';
@@ -1095,21 +976,11 @@ for i = 1:length(blockLines)
     if ~parsedArgs(i).isPassThrough
         sizeClassMatch = regexp(currentCode, ['^', sizeClassPattern], 'tokens', 'once');
         if ~isempty(sizeClassMatch)
-            originalSizeClassMatch = sizeClassMatch{1}; % Store original for advancing currentCode
-            
-            % Step 1: Clean NBSP and trim
-            tempSizeClass = strrep(originalSizeClassMatch, char(160), ' '); 
-            trimmedSizeClass = strtrim(tempSizeClass);
-            
-            % Step 2: Standardize comma spacing
-            if ~isempty(trimmedSizeClass)
-                finalSizeClass = strrep(trimmedSizeClass, ', ', ',');
-            else
-                finalSizeClass = ''; % Ensure it's empty if trimmedSizeClass is empty
+            parsedArgs(i).sizeClass = strtrim(sizeClassMatch{1});
+            currentCode = regexprep(currentCode, ['^', regexptranslate('escape', parsedArgs(i).sizeClass)], '', 'once');
+            if ~isempty(parsedArgs(i).sizeClass)
+                parsedArgs(i).sizeClass = strrep(parsedArgs(i).sizeClass, ', ', ',');
             end
-            parsedArgs(i).sizeClass = finalSizeClass; % Store the fully processed string
-            
-            currentCode = regexprep(currentCode, ['^', regexptranslate('escape', originalSizeClassMatch)], '', 'once'); % Advance using original
         else
             parsedArgs(i).sizeClass = '';
         end
@@ -1118,25 +989,20 @@ for i = 1:length(blockLines)
         % 3. Extract Validation Functions (e.g., {mustBeNumeric, mustBePositive})
         validatorsMatch = regexp(currentCode, ['^', validatorsPattern], 'tokens', 'once');
         if ~isempty(validatorsMatch)
-            originalValidatorsMatch = validatorsMatch{1}; % Store original for advancing
-            tempValidators = strrep(originalValidatorsMatch, char(160), ' '); % Clean NBSP
-            parsedArgs(i).validators = strtrim(tempValidators); % Trim
-            currentCode = regexprep(currentCode, ['^', regexptranslate('escape', originalValidatorsMatch)], '', 'once'); % Advance using original
+            parsedArgs(i).validators = strtrim(validatorsMatch{1});
+            currentCode = regexprep(currentCode, ['^', regexptranslate('escape', parsedArgs(i).validators)], '', 'once');
         else
             parsedArgs(i).validators = '';
         end
         currentCode = strtrim(currentCode);
 
         % 4. Extract Default Value (e.g., = "default", = 10)
-        if startsWith(currentCode, '=') % Check based on potentially spaced currentCode
-            defaultMatch = regexp(currentCode, defaultValuePattern, 'tokens', 'once'); % defaultValuePattern is '\s*=\s*(.+)'
+        if startsWith(currentCode, '=')
+            defaultMatch = regexp(currentCode, defaultValuePattern, 'tokens', 'once');
             if ~isempty(defaultMatch)
-                originalDefaultValueContent = defaultMatch{1}; % This is the content part after " = "
-                tempDefault = strrep(originalDefaultValueContent, char(160), ' '); % Clean NBSP
-                parsedArgs(i).defaultValue = strtrim(tempDefault); % Trim
+                parsedArgs(i).defaultValue = strtrim(defaultMatch{1});
             else
-                % This case handles "name =" (empty default value)
-                parsedArgs(i).defaultValue = ''; 
+                parsedArgs(i).defaultValue = ''; % Explicit empty default for "name ="
             end
         else
             parsedArgs(i).defaultValue = ''; 
@@ -1322,10 +1188,7 @@ for i = 1:length(lines) % Iterate through each line provided to the function
 
             if equalsIndexInCode > 0 % If a valid assignment '=' was found
                 isAssignable = true;
-                % lhs extraction with additional cleaning for potentially problematic characters
-                tempLhs = codePart(1:equalsIndexInCode-1);
-                tempLhs = strrep(tempLhs, char(160), ' '); % Replace non-breaking space (char 160) with regular space
-                lhs = strtrim(tempLhs); % Extract Left-Hand Side
+                lhs = strtrim(codePart(1:equalsIndexInCode-1)); % Extract Left-Hand Side
                 rhs = strtrim(codePart(equalsIndexInCode+1:end)); % Extract Right-Hand Side
                 commentPartForAssignment = commentPartExtracted; % Store its trailing comment
             end
@@ -1335,7 +1198,7 @@ for i = 1:length(lines) % Iterate through each line provided to the function
     % Decision Logic: Based on whether the line is assignable, a full comment, or other code.
     if isAssignable
         % If it's the first line in a potential block OR its indent matches the last CODE line's indent in the current block:
-        if isempty(blockLinesIndices) || (~isempty(blockLinesIndents) && strcmp(currentIndent, blockLinesIndents{end}))
+        if isempty(blockLinesIndices) || strcmp(currentIndent, blockLinesIndents{end})
             blockLinesIndices(end+1) = i; % Add line index to block
             blockLinesContent{end+1} = struct('type', 'assignment', ... % Store details
                 'lhs', lhs, 'rhs', rhs, ...
@@ -1343,13 +1206,11 @@ for i = 1:length(lines) % Iterate through each line provided to the function
                 'originalIndex', i, 'indentStr', currentIndent);
             blockLinesIndents{end+1} = currentIndent; % Record indent of this CODE line for the block
             % Update maximum LHS length for alignment calculation
-            fprintf('ALIGN_DEBUG_LHS_CALC: Line %d, Original LHS: "%s", Length: %d\n', i, lhs, length(lhs));
             % if options.UseTabs % Tab handling for LHS length is approximate
                 maxLhsLen = max(maxLhsLen, length(lhs));
             % else
                 % maxLhsLen = max(maxLhsLen, length(lhs));
             % end
-            fprintf('ALIGN_DEBUG_LHS_CALC: Line %d, Updated maxLhsLen: %d\n', i, maxLhsLen);
         else % Assignable line, but its indent differs from the current block's code lines.
             if ~isempty(blockLinesIndices) % Process the previously accumulated block.
                 lines = applyAlignmentToBlock(lines, blockLinesContent, maxLhsLen, options);
@@ -1362,18 +1223,16 @@ for i = 1:length(lines) % Iterate through each line provided to the function
                 'comment', commentPartForAssignment, ...
                 'originalIndex', i, 'indentStr', currentIndent);
             blockLinesIndents{end+1} = currentIndent;
-            fprintf('ALIGN_DEBUG_LHS_CALC: Line %d (new block), Original LHS: "%s", Length: %d\n', i, lhs, length(lhs));
             % if options.UseTabs
                 maxLhsLen = max(maxLhsLen, length(lhs));
             % else
                 % maxLhsLen = max(maxLhsLen, length(lhs));
             % end
-            fprintf('ALIGN_DEBUG_LHS_CALC: Line %d (new block), Updated maxLhsLen: %d\n', i, maxLhsLen);
         end
     elseif isFullCommentLine
         % If the line is a full comment:
         % And a block is active AND the comment's indent matches the block's code line indent:
-        if ~isempty(blockLinesIndices) && ~isempty(blockLinesIndents) && strcmp(currentIndent, blockLinesIndents{end})
+        if ~isempty(blockLinesIndices) && strcmp(currentIndent, blockLinesIndents{end})
             % Add comment to the current block as a 'comment' type. It doesn't break the block.
             % These comments are preserved but not used for `maxLhsLen` calculation.
             blockLinesIndices(end+1) = i;
@@ -1423,28 +1282,19 @@ for k = 1:length(blockContent) % Iterate through each item (assignment or commen
     idx = item.originalIndex; % Original line number
 
     if strcmp(item.type, 'assignment') % Only format assignment lines
-        fprintf('ALIGN_DEBUG_APPLY: Original Index: %d, LHS: "%s", Length(LHS): %d\n', idx, item.lhs, length(item.lhs));
-        fprintf('ALIGN_DEBUG_APPLY: Received maxLhsLen: %d\n', maxLhsLen);
-
         blockIndent = item.indentStr; % Use the indent stored with this specific assignment line
 
         % Calculate number of spaces needed to align this line's '=' with `maxLhsLen`.
         numSpacesBeforeEquals = maxLhsLen - length(item.lhs);
-        fprintf('ALIGN_DEBUG_APPLY: Calculated numSpacesBeforeEquals: %d\n', numSpacesBeforeEquals);
-        
         spacesBeforeEqualsStr = repmat(' ', 1, numSpacesBeforeEquals); % String of spaces
-        fprintf('ALIGN_DEBUG_APPLY: Length of spacesBeforeEqualsStr: %d\n', length(spacesBeforeEqualsStr));
 
         % Construct the new aligned line.
         if options.SpaceAroundOperators % Control spacing around '='
-            fprintf('ALIGN_DEBUG_APPLY: Constructing line with " = "\n');
             newLine = [blockIndent, item.lhs, spacesBeforeEqualsStr, ' = ', item.rhs, item.comment];
         else
-            fprintf('ALIGN_DEBUG_APPLY: Constructing line with "="\n');
             newLine = [blockIndent, item.lhs, spacesBeforeEqualsStr, '=', item.rhs, item.comment];
         end
         lines{idx} = regexprep(newLine, '\s+$', ''); % Update the line in the main `lines` cell array, trim trailing whitespace.
-        fprintf('ALIGN_DEBUG_APPLY: Final aligned line for index %d: "%s"\n', idx, lines{idx});
     elseif strcmp(item.type, 'comment')
         % Comment lines within the block are preserved as they are.
         % Their original content (including their own indentation, which should match the block's code)
