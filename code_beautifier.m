@@ -481,29 +481,31 @@ for i = 1:length(lines) % Loop through each line of the input code.
     end
 
     % --- Stage 4: Indentation Logic for Current Code Line (that contains code) ---
-    % Determine currentLineEffectiveIndentLevel & manage inCaseBody for current line processing
+    currentLineEffectiveIndentLevel = indentLevel; % Default indent level for this code line
+
+    if ismember(firstWord, dedentKeywords) % Handles 'end'
+        currentLineEffectiveIndentLevel = max(0, indentLevel - 1); % 'end' is dedented
+        % State changes for `inSwitchBlockDepth` and `inCaseBody` when an 'end'
+        % closes a switch are handled in the "Update IndentLevel for NEXT line" section.
+    elseif ismember(firstWord, midBlockKeywords) % Handles 'elseif', 'else', 'catch', 'case', 'otherwise'
         if ismember(firstWord, {'case', 'otherwise'})
-            % 'case' or 'otherwise' line itself is at 'indentLevel'
-            currentLineEffectiveIndentLevel = indentLevel; % Set indent for the 'case'/'otherwise' line
-            inCaseBody = true; % Set flag: content following this line will be in a case body
-        elseif ismember(firstWord, {'elseif', 'else', 'catch'})
-            currentLineEffectiveIndentLevel = max(0, indentLevel - 1); % Dedent these keywords
-            inCaseBody = false; % Not in a switch-case body
-        elseif ismember(firstWord, dedentKeywords) % 'end'
-            currentLineEffectiveIndentLevel = max(0, indentLevel - 1); % Dedent 'end'
-            % Note: Resetting inCaseBody for an 'end' that closes a switch
-            % is handled in the "Update indentLevel for NEXT line" section
-            % via the inSwitchBlockDepth variable.
-        else % This case handles lines that are not starting with a major block control keyword
-             % (e.g., firstWord is "" for a regular code line, or it's a non-keyword command)
-            fprintf('DEBUG_SWITCH_CASE_CONTENT: Line i=%d, firstWord="%s", About to check inCaseBody. Value of inCaseBody: %d, indentLevel: %d\n', i, firstWord, inCaseBody, indentLevel);
-            if inCaseBody % Check if we are currently inside the body of a 'case' or 'otherwise'
-                currentLineEffectiveIndentLevel = indentLevel + 1; 
-            else
-                currentLineEffectiveIndentLevel = indentLevel; 
-            end
-            fprintf('DEBUG_SWITCH_CASE_CONTENT_POST: Line i=%d, firstWord="%s", currentLineEffectiveIndentLevel: %d\n', i, firstWord, currentLineEffectiveIndentLevel);
+            % 'case' and 'otherwise' keywords are indented to the current `indentLevel`,
+            % which is the level of the 'switch' statement's content.
+            % `currentLineEffectiveIndentLevel` remains `indentLevel`.
+            inCaseBody = true; % Set flag: subsequent lines are content of this case/otherwise.
+        else % 'elseif', 'else', 'catch'
+            % These keywords are dedented one level relative to the block they are part of.
+            currentLineEffectiveIndentLevel = max(0, indentLevel - 1);
+            inCaseBody = false; % Reset flag, not in a 'case' body for if/try blocks.
         end
+    end
+
+    % Additional indentation for statements that are *inside* a 'case' or 'otherwise' body.
+    % This applies if `inCaseBody` is true (set by 'case' or 'otherwise' keyword)
+    % AND the current line is not itself a block control keyword (like 'if' nested in 'case').
+    if inCaseBody && ~ismember(firstWord, allBlockCtrlKeywords) && ~isempty(firstWord) % `~isempty(firstWord)` ensures it's not just a comment
+        currentLineEffectiveIndentLevel = currentLineEffectiveIndentLevel + 1; % Indent case content further
+    end
 
     % Determine the indent string based on the calculated effective level.
     currentIndentStr = repmat(indentChar, 1, currentLineEffectiveIndentLevel * indentUnit * (options.IndentSize > 0));
@@ -676,12 +678,6 @@ for i = 1:length(lines) % Loop through each line of the input code.
     % --- Stage 6: Construct the Beautiful Line ---
     % Assemble the indented code part and the (optional) comment part.
     % Handles cases: only comment, code + comment, only code.
-        fprintf('DEBUG_PCP_BEFORE_TRIM: Line i=%d, raw processedCodePart: "%s"\n', i, processedCodePart);
-        fprintf('DEBUG_LINE_ASSEMBLY: Line i=%d, firstWord="%s"\n', i, firstWord);
-        fprintf('    currentIndentStr (len %d): "%s"\n', length(currentIndentStr), currentIndentStr);
-        fprintf('    processedCodePart (trimmed): "%s"\n', strtrim(processedCodePart)); % Use strtrim here
-        fprintf('    commentPart: "%s"\n', commentPart);
-        fprintf('    currentLineEffectiveIndentLevel used for currentIndentStr: %d\n', currentLineEffectiveIndentLevel);
     if isempty(strtrim(processedCodePart)) && ~isempty(commentPart) % Line became comment-only after processing
         tempBeautifulLines{i} = regexprep([currentIndentStr, commentPart], '\s+$', '');
     elseif ~isempty(strtrim(processedCodePart)) && ~isempty(commentPart) % Code and comment
@@ -802,66 +798,6 @@ if options.AlignAssignments && ~isempty(beautifulLines)
     beautifulLines = alignAssignmentBlocksInternal(beautifulLines, options);
 end
 
-% --- Format 'arguments' Blocks ---
-if options.FormatArgumentsBlock && ~isempty(beautifulLines)
-    lineIdx = 1;
-    while lineIdx <= length(beautifulLines)
-        currentLineOriginal = beautifulLines{lineIdx};
-        currentLineTrimmed = strtrim(currentLineOriginal);
-        currentLineIndentStr = regexp(currentLineOriginal, '^\s*', 'match', 'once');
-
-        if strcmp(currentLineTrimmed, 'arguments')
-            argumentsLineIndex = lineIdx;
-            blockContentStartIndex = lineIdx + 1;
-            blockContentEndIndex = -1; % Not inclusive of the 'end' line itself
-            endLineIndex = -1;
-
-            % Find matching 'end'
-            foundEnd = false;
-            for j = blockContentStartIndex:length(beautifulLines)
-                prospectiveEndLineOriginal = beautifulLines{j};
-                prospectiveEndLineTrimmed = strtrim(prospectiveEndLineOriginal);
-                prospectiveEndLineIndentStr = regexp(prospectiveEndLineOriginal, '^\s*', 'match', 'once');
-
-                if strcmp(prospectiveEndLineTrimmed, 'end') && strcmp(prospectiveEndLineIndentStr, currentLineIndentStr)
-                    blockContentEndIndex = j - 1;
-                    endLineIndex = j;
-                    foundEnd = true;
-                    break;
-                end
-            end
-
-            if foundEnd && blockContentEndIndex >= blockContentStartIndex
-                argumentLinesToFormat = beautifulLines(blockContentStartIndex : blockContentEndIndex);
-                
-                % Ensure indentChar and indentUnit are available from outer scope
-                % (they are defined earlier in code_beautifier.m)
-                oneIndentUnit = repmat(indentChar, 1, indentUnit * (options.IndentSize > 0));
-                baseContentIndentString = [currentLineIndentStr, oneIndentUnit];
-                
-                formattedArgumentLines = formatArgumentsBlockInternal(argumentLinesToFormat, options, indentChar, indentUnit, baseContentIndentString);
-                
-                if length(formattedArgumentLines) == length(argumentLinesToFormat)
-                    for k_replace = 1:length(formattedArgumentLines)
-                        beautifulLines{blockContentStartIndex + k_replace - 1} = formattedArgumentLines{k_replace};
-                    end
-                    lineIdx = endLineIndex + 1; % Continue after the 'end' line
-                else
-                    warning('code_beautifier:ArgBlockLineMismatch', ...
-                            'Argument block formatting changed line count. Skipping replacement for block starting at line %d.', argumentsLineIndex);
-                    lineIdx = argumentsLineIndex + 1; % Skip 'arguments' line and proceed
-                end
-            else
-                % No matching 'end' found or block empty, just move past 'arguments' line
-                lineIdx = argumentsLineIndex + 1;
-            end
-        else
-            lineIdx = lineIdx + 1; % Not an 'arguments' line
-        end
-    end
-end
-% --- END: Format 'arguments' Blocks ---
-
 % --- Output Formatting ---
 % Convert the cell array of processed lines back to the requested output format ('char' or 'cell').
 if strcmpi(options.OutputFormat, 'char')
@@ -872,19 +808,22 @@ end
 end
 
 % --- Helper function to format 'arguments' blocks ---
-function formattedBlockLines = formatArgumentsBlockInternal(blockLines, options, indentChar, indentUnit, baseContentIndentString)
+function formattedBlockLines = formatArgumentsBlockInternal(blockLines, options, indentChar, indentUnit)
 % formatArgumentsBlockInternal Parses and formats lines within an 'arguments' block for alignment.
 %
 % Syntax:
-%   formattedBlockLines = formatArgumentsBlockInternal(blockLines, options, indentChar, indentUnit, baseContentIndentString)
+%   formattedBlockLines = formatArgumentsBlockInternal(blockLines, options, indentChar, indentUnit)
 %
 % Inputs:
 %   blockLines: Cell array of strings. Each cell contains one line from the
 %               'arguments' block (excluding the 'arguments' and 'end' lines themselves).
 %   options:    Struct containing the beautifier options (e.g., SpaceAroundOperators).
 %   indentChar: Character string used for a single indentation unit (e.g., '    ' or '\t').
+%               This is not directly used for indenting the whole block here, as lines
+%               are expected to have their base indent already. It could be used for
+%               internal relative indenting if needed in future enhancements.
 %   indentUnit: Scalar, number of `indentChar` repetitions for one standard indent level.
-%   baseContentIndentString: String, the base indentation to apply to all content lines within the block.
+%               Similar to `indentChar`, primarily for context if deeper logic is added.
 %
 % Outputs:
 %   formattedBlockLines: Cell array of strings, representing the formatted lines
@@ -910,7 +849,7 @@ end
 
 parsedArgs = struct('name', {}, 'sizeClass', {}, 'validators', {}, ...
     'defaultValue', {}, 'comment', {}, 'originalLine', {}, ...
-    'isCommentOnly', {}, 'isPassThrough', {}); % Removed indentStr, added isPassThrough
+    'isCommentOnly', {}, 'indentStr', {});
 
 % Regex patterns
 % Arg Name: captures simple names or dot-notation names (e.g., options.Value)
@@ -927,23 +866,25 @@ for i = 1:length(blockLines)
     line = blockLines{i};
     parsedArgs(i).originalLine = line;
     parsedArgs(i).isCommentOnly = false;
-    parsedArgs(i).isPassThrough = false; % Initialize new field
+
+    leadingWhitespace = regexp(line, '^\s*', 'match', 'once');
+    parsedArgs(i).indentStr = leadingWhitespace;
 
     trimmedLine = strtrim(line);
 
-    % Preserve empty lines as they are
+    % Preserve empty lines as they are, just storing their original indent.
     if isempty(trimmedLine)
-        parsedArgs(i).name = ''; 
-        parsedArgs(i).comment = ''; 
-        % isCommentOnly and isPassThrough remain false
+        parsedArgs(i).name = ''; % Mark as not a typical arg line, ensures it's skipped in width calculation
+        parsedArgs(i).comment = ''; % Effectively a blank line
+        % Other fields like sizeClass, validators, defaultValue remain empty.
         continue;
     end
 
-    % Preserve full-line comments
+    % Preserve full-line comments, storing the entire line (including its original indent via commentPart).
     if startsWith(trimmedLine, '%')
         parsedArgs(i).isCommentOnly = true;
-        parsedArgs(i).comment = trimmedLine; % Store the whole trimmed line as comment
-        % name remains empty, isPassThrough remains false
+        parsedArgs(i).comment = trimmedLine; % Store the whole line as comment
+        % other fields remain empty
         continue;
     end
 
@@ -960,54 +901,55 @@ for i = 1:length(blockLines)
     nameMatch = regexp(currentCode, namePattern, 'tokens', 'once');
     if ~isempty(nameMatch)
         parsedArgs(i).name = strtrim(nameMatch{1});
+        % Update currentCode to exclude the matched name part for subsequent parsing.
         currentCode = currentCode(length(nameMatch{1})+1:end);
     else
-        % If no name, and not a comment/blank line, it's a pass-through line
-        parsedArgs(i).name = '';
-        parsedArgs(i).isPassThrough = true; 
-        % Store the original trimmed line to preserve it, comment already extracted
-        parsedArgs(i).originalLineTrimmed = codePart; % codePart is trimmedLine minus commentPart
-        currentCode = ''; % No more to parse for this line if it's pass-through
+        parsedArgs(i).name = ''; % Should ideally not happen for a valid argument line.
+    end
+    currentCode = strtrim(currentCode); % Trim for next parsing step.
+
+    % 2. Extract Size and Class Specification (e.g., (1,:) char, string)
+    % This pattern is anchored to the beginning of the remaining currentCode.
+    sizeClassMatch = regexp(currentCode, ['^', sizeClassPattern], 'tokens', 'once');
+    if ~isempty(sizeClassMatch)
+        parsedArgs(i).sizeClass = strtrim(sizeClassMatch{1});
+        % Update currentCode: remove the matched size/class part.
+        % regexprep is used for safe removal based on the matched string.
+        currentCode = regexprep(currentCode, ['^', regexptranslate('escape', parsedArgs(i).sizeClass)], '', 'once');
+    else
+        parsedArgs(i).sizeClass = '';
     end
     currentCode = strtrim(currentCode);
 
-    % 2. Extract Size and Class Specification (e.g., (1,:) char, string) - only if not pass-through
-    % This pattern is anchored to the beginning of the remaining currentCode.
-    if ~parsedArgs(i).isPassThrough
-        sizeClassMatch = regexp(currentCode, ['^', sizeClassPattern], 'tokens', 'once');
-        if ~isempty(sizeClassMatch)
-            parsedArgs(i).sizeClass = strtrim(sizeClassMatch{1});
-            currentCode = regexprep(currentCode, ['^', regexptranslate('escape', parsedArgs(i).sizeClass)], '', 'once');
-            if ~isempty(parsedArgs(i).sizeClass)
-                parsedArgs(i).sizeClass = strrep(parsedArgs(i).sizeClass, ', ', ',');
-            end
-        else
-            parsedArgs(i).sizeClass = '';
-        end
-        currentCode = strtrim(currentCode);
+    % 3. Extract Validation Functions (e.g., {mustBeNumeric, mustBePositive})
+    % Anchored to the beginning of the remaining currentCode.
+    validatorsMatch = regexp(currentCode, ['^', validatorsPattern], 'tokens', 'once');
+    if ~isempty(validatorsMatch)
+        parsedArgs(i).validators = strtrim(validatorsMatch{1});
+        % Update currentCode: remove the matched validators part.
+        currentCode = regexprep(currentCode, ['^', regexptranslate('escape', parsedArgs(i).validators)], '', 'once');
+    else
+        parsedArgs(i).validators = '';
+    end
+    currentCode = strtrim(currentCode);
 
-        % 3. Extract Validation Functions (e.g., {mustBeNumeric, mustBePositive})
-        validatorsMatch = regexp(currentCode, ['^', validatorsPattern], 'tokens', 'once');
-        if ~isempty(validatorsMatch)
-            parsedArgs(i).validators = strtrim(validatorsMatch{1});
-            currentCode = regexprep(currentCode, ['^', regexptranslate('escape', parsedArgs(i).validators)], '', 'once');
+    % 4. Extract Default Value (e.g., = "default", = 10)
+    % This should be what's left, starting with an '='.
+    if startsWith(currentCode, '=') % Check if the remainder starts with '='
+        defaultMatch = regexp(currentCode, defaultValuePattern, 'tokens', 'once');
+        if ~isempty(defaultMatch)
+            parsedArgs(i).defaultValue = strtrim(defaultMatch{1});
         else
-            parsedArgs(i).validators = '';
+            % Handle cases like "name =" (empty default)
+            % if strcmp(strtrim(currentCode), '=')
+                parsedArgs(i).defaultValue = ''; % Explicit empty default
+            % else
+                % parsedArgs(i).defaultValue = ''; % Or treat as no default
+            % end
         end
-        currentCode = strtrim(currentCode);
-
-        % 4. Extract Default Value (e.g., = "default", = 10)
-        if startsWith(currentCode, '=')
-            defaultMatch = regexp(currentCode, defaultValuePattern, 'tokens', 'once');
-            if ~isempty(defaultMatch)
-                parsedArgs(i).defaultValue = strtrim(defaultMatch{1});
-            else
-                parsedArgs(i).defaultValue = ''; % Explicit empty default for "name ="
-            end
-        else
-            parsedArgs(i).defaultValue = ''; 
-        end
-    end % end if ~parsedArgs(i).isPassThrough
+    else
+        parsedArgs(i).defaultValue = ''; % No default value part
+    end
 end
 
 % Determine maximum widths for alignment
@@ -1016,7 +958,7 @@ maxSizeClassLen = 0;
 maxValidatorsLen = 0;
 
 for i = 1:length(parsedArgs)
-    if parsedArgs(i).isCommentOnly || parsedArgs(i).isPassThrough || isempty(parsedArgs(i).name) % Skip special lines
+    if parsedArgs(i).isCommentOnly || isempty(parsedArgs(i).name) % Skip comment-only or blank lines
         continue;
     end
     maxNameLen = max(maxNameLen, length(parsedArgs(i).name));
@@ -1032,26 +974,21 @@ end
 formattedBlockLines = cell(size(blockLines));
 for i = 1:length(parsedArgs)
     if parsedArgs(i).isCommentOnly
-        formattedBlockLines{i} = [baseContentIndentString, strtrim(parsedArgs(i).comment)];
+        formattedBlockLines{i} = [parsedArgs(i).indentStr, parsedArgs(i).comment];
         continue;
     end
-    
-    if isempty(parsedArgs(i).name) && isempty(parsedArgs(i).comment) && ~parsedArgs(i).isPassThrough % Genuine blank line
-        formattedBlockLines{i} = ''; % Blank line
-        continue;
-    end
-
-    if parsedArgs(i).isPassThrough
-        % Pass-through lines (like (Repeating)...) get base indent + their original trimmed content
-        formattedBlockLines{i} = [baseContentIndentString, strtrim(parsedArgs(i).originalLineTrimmed), parsedArgs(i).comment];
-        formattedBlockLines{i} = regexprep(formattedBlockLines{i}, '\s+$', ''); % Trim trailing whitespace
+    % If it's an empty line (original line was only whitespace, or became so),
+    % its .name will be empty, and .comment will be empty.
+    if isempty(parsedArgs(i).name) && isempty(parsedArgs(i).comment)
+        formattedBlockLines{i} = parsedArgs(i).indentStr; % Preserve original indent (becomes an empty line)
         continue;
     end
 
-    % Argument definition line reconstruction
+    % Start reconstructing the line with its original indent.
     lineParts = {};
-    lineParts{end+1} = baseContentIndentString; % Use new base indent for content
+    lineParts{end+1} = parsedArgs(i).indentStr;
 
+    % Name part
     nameStr = parsedArgs(i).name;
     namePadding = maxNameLen - length(nameStr);
     lineParts{end+1} = [nameStr, repmat(' ', 1, namePadding)];
