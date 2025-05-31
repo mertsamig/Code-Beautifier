@@ -338,6 +338,24 @@ for i = 1:length(lines)
     originalLine = lines{i}; 
     trimmedOriginalLine = strtrim(originalLine); 
     
+    % The lineData struct holds comprehensive information about each line being processed.
+    % It is populated progressively as the line undergoes various formatting stages.
+    % Fields include:
+    %   originalLine: The raw, unprocessed line string from the input.
+    %   trimmedOriginalLine: The originalLine after leading/trailing whitespace is removed.
+    %   isBlockCommentBoundaryStart: True if the line starts a block comment (e.g., '%{').
+    %   isBlockCommentBoundaryEnd: True if the line ends a block comment (e.g., '%}').
+    %   isBlockCommentContent: True if the line is part of a block comment's content, including the boundary lines.
+    %   isBlankLine: True if the original trimmed line was empty.
+    %   codePart: The extracted code segment from the trimmedOriginalLine, after stripping any trailing comment.
+    %   commentPart: The extracted comment segment from the trimmedOriginalLine (e.g., ' % my comment').
+    %   firstWord: The first significant keyword (e.g., 'if', 'for', 'end') or token found in the codePart. Used for indent logic.
+    %   effectiveIndentLevel: The calculated indentation level (number of indent units) for this line.
+    %   effectiveIndentString: The actual indentation string (composed of spaces or tabs) to be prepended to the line.
+    %   processedCodePart: The codePart after applying formatting rules like operator spacing, semicolon adjustments, etc.
+    %   lineEndsWithContinuation: True if the processedCodePart ends with '...' indicating line continuation.
+    %   formattedLine: The constructed line string after applying indentation and processing to code/comment parts. This is the primary output for this line before potential block-level adjustments like assignment alignment.
+    %   formattingSkipped: True if this line was skipped due to a '% beautify_off' directive active for this line.
     lineData = struct(...
         'originalLine', originalLine, ...
         'trimmedOriginalLine', trimmedOriginalLine, ...
@@ -491,12 +509,38 @@ for i = 1:length(lines)
         end
 
         if options.AddSemicolonsToStatements 
+            % Regex: '(?<![=<>~.\s])=(?![=])'
+            % Purpose: Detects if the line contains an assignment operator '=' that is not part of a comparison operator (e.g. '==', '>=', '<=', '~=').
+            % Characteristics: Uses negative lookbehind '(?<!...)' and negative lookahead '(?!...)' to ensure the '=' is standalone.
+            %                  It also checks that the character before '=' is not a dot (for struct field access like obj.prop=val) or space (already handled by other rules ideally).
+            % Contribution: Helps identify lines that are assignments, which typically do not need an automatically added semicolon if they are intended to suppress output (user adds it).
             isAssignment = ~isempty(regexp(processedCodePart, '(?<![=<>~.\s])=(?![=])', 'once')); 
-            isKeywordLine = ~isempty(firstWord); 
+
+            isKeywordLine = ~isempty(firstWord); % `firstWord` is already identified (e.g. 'if', 'for', 'function')
+
             endsWithContOrSemi = endsWith(strtrim(processedCodePart), '...') || endsWith(strtrim(processedCodePart), ';'); 
+
+            % Regex: '\w\s*\(.*\)'
+            % Purpose: Identifies expressions that look like function calls, e.g., 'myFunction(arg1, arg2)' or 'disp Hello'.
+            % Characteristics: Matches a word character '\w', followed by optional whitespace '\s*', an opening parenthesis '\(', any characters '.*', and a closing parenthesis '\)'.
+            %                  This is a broad match for "name(...)" patterns.
+            % Contribution: Such function calls, if they are statements themselves (not assignments, not keywords) and don't end with ';' or '...', should get a semicolon to suppress output.
             isFunctionCallLike = ~isempty(regexp(processedCodePart, '\w\s*\(.*\)', 'once')); 
+
+            % Regex 1: '\w' (checks if there's any word character)
+            % Regex 2: '^\s*\w+\s*$' (checks if the line is ONLY a single word, possibly with whitespace)
+            % Purpose: Identifies if the line is a simple expression (like 'a + b', 'x && y') but not just a single variable name (like 'myVar').
+            % Characteristics: `isSimpleExpression` is true if the line contains at least one word character, AND it's not solely a single word.
+            %                  A single word on a line (e.g., a variable name to display its value) should not get a semicolon.
+            % Contribution: Helps target expressions that produce output and would benefit from a semicolon, while avoiding single variables.
             isSimpleExpression = ~isempty(regexp(processedCodePart, '\w', 'once')) && ... 
                 isempty(regexp(processedCodePart,'^\s*\w+\s*$', 'once')); 
+
+            % Condition to add semicolon:
+            % - Not an assignment.
+            % - Not a line starting with a block control keyword.
+            % - Doesn't already end with '...' or ';'.
+            % - AND it's either a function-like call or a simple expression (that's not just a single variable).
             if ~isAssignment && ~isKeywordLine && ~endsWithContOrSemi && (isFunctionCallLike || isSimpleExpression)
                 processedCodePart = [processedCodePart, ';']; 
             end
@@ -507,43 +551,88 @@ for i = 1:length(lines)
             for k_rel = 1:length(relationalOps)
                 op_rel = relationalOps{k_rel};
                 escaped_op_rel = regexptranslate('escape', op_rel);
+                % Pattern: Non-whitespace, optional spaces, relational operator, optional spaces, non-whitespace.
+                % Example: A<B, A<=B, A == B
                 pat_rel_robust = ['(\S)\s*', escaped_op_rel, '\s*(\S)']; 
                 rep_rel = ['$1 ', op_rel, ' $2'];
+                % Target: Relational operators (==, ~=, <=, >=, <, >).
+                % Purpose: Ensures a single space on each side of relational operators for consistent readability.
+                % Approach: Matches the operator and the non-whitespace characters immediately surrounding it,
+                % then reinserts them with single spaces around the operator.
                 processedCodePart = regexprep(processedCodePart, pat_rel_robust, rep_rel);
             end
             
+            % Pattern: Start of line, 'function', potential output args, '=', rest of function definition.
+            % Example: function myOutput = myFunction(input)
             func_def_pat_v3 = '^(\s*function\s+[^=]+?)\s*=\s*(.+)$'; 
             func_def_rep_v3 = '$1 = $2'; 
+            % Target: Equals sign in function definitions with output arguments.
+            % Purpose: Standardizes spacing around the '=' in function signatures like 'function out = func(in)'.
+            % Approach: Specifically matches 'function ... = ...' to ensure only the assignment part gets spaced,
+            % preserving the 'function' keyword and arguments. Applied 'once' per line.
             processedCodePart = regexprep(processedCodePart, func_def_pat_v3, func_def_rep_v3, 'once');
             
             opListGeneral = { ...
-                '&&', '||', ... 
-                '.*', './', '.\\', '.^', ...             
-                '*', '/', '\\', '^', ...                 
-                '=' ...                                  
+                '&&', '||', ... % Logical
+                '.*', './', '.\\', '.^', ... % Element-wise arithmetic
+                '*', '/', '\\', '^', ... % Arithmetic
+                '=' ... % Assignment (general, after function definition handled)
                 };
             for op_idx = 1:length(opListGeneral)
                 op = opListGeneral{op_idx};
                 escaped_op = regexptranslate('escape', op); 
+                % Pattern: Non-whitespace, optional spaces, operator, optional spaces, non-whitespace.
                 pat = ['(\S)\s*', escaped_op, '\s*(\S)'];
                 rep = ['$1 ', op, ' $2']; 
+                % Target: General binary operators (logical && ||, element-wise .*, ./, .\, .^, arithmetic *, /, \, ^, and assignment =).
+                % Purpose: Ensures a single space on each side of these common binary operators.
+                % Approach: Similar to relational operators, matches operator and surrounding non-whitespace,
+                % then reinserts with single spaces. This is applied after the specific function definition '=' case.
                 processedCodePart = regexprep(processedCodePart, pat, rep);
             end
 
+            % Pattern: Word char or closing paren/bracket/quote, optional spaces, + or -, optional spaces, word char or opening paren/bracket or dot.
+            % Example: a+b, c - d, (e)+f
             s1 = '(\w|\)|\]|\'')'; 
             s2 = '(\w|\(|\[|\.)'; 
             pat_binary_plus_minus = [s1, '\s*([+\-])\s*', s2]; 
             rep_binary_plus_minus = '$1 $2 $3'; 
+            % Target: Binary plus (+) and minus (-) operators.
+            % Purpose: Adds spaces around binary + and - operators. This is applied before unary operator adjustments.
+            % Approach: Identifies + or - when preceded by a character that typically ends an operand (word char, ')]''')
+            % and followed by a character that typically starts an operand (word char, '([.' ).
             processedCodePart = regexprep(processedCodePart, pat_binary_plus_minus, rep_binary_plus_minus);
 
+            % Pattern: Preceding char (e.g. '(', '[', '{', '=', ',', space, '&', '|'), one or more spaces, + or -, non-whitespace.
+            % Example: (= -val), ([ +val])
             unary_fix_class_1 = '[=\(\[\{,\s&|]'; % Corrected: Added &| as per original
             pat_unary_fix_1 = ['(', unary_fix_class_1, ')\s+([+\-])\s*(\w|[\.\(])'];
+            % Target: Unary + or - that might have been incorrectly spaced by previous general rules.
+            % Purpose: Removes space between certain preceding characters (like '(', '=', or other operators) and a unary +/-.
+            % Approach: Matches a character from `unary_fix_class_1`, followed by spaces, then +/- and an operand.
+            % Replaces it by removing the spaces, e.g., changes '(  -val)' to '(-val)'.
             processedCodePart = regexprep(processedCodePart, pat_unary_fix_1, '$1$2$3');
 
+            % Pattern: Start of line, + or -, one or more spaces, non-whitespace.
+            % Example: +val (at start of code part)
             pat_unary_fix_2 = ['^([+\-])\s+(\w|[\.\(])'];
+            % Target: Unary + or - at the beginning of a code segment.
+            % Purpose: Removes leading space if a unary +/- at the start of a line was spaced. E.g. "  +val" -> "+val".
+            % Approach: Matches start-of-string, +/-, spaces, and an operand. Replaces by removing spaces.
             processedCodePart = regexprep(processedCodePart, pat_unary_fix_2, '$1$2');
 
+            % Pattern: Digit, optional spaces, 'e', optional spaces, sign (+ or -), optional spaces, digits.
+            % Example: 1 e - 5, 2.3E + 10
+            % Target: Scientific notation like '1e-5' or '2.3e+10' that might have spaces.
+            % Purpose: Ensures no spaces within scientific notation numbers (exponent with sign).
+            % Approach: Matches a digit, optional spaces around 'e', optional spaces around sign, then digits.
+            % Reconstructs it without spaces. Handles both 'e+num' and 'e-num'. Case-insensitive for 'e'.
             processedCodePart = regexprep(processedCodePart, '(\d)\s*e\s*([+\-])\s*(\d+)', '$1e$2$3', 'ignorecase'); 
+            % Pattern: Digit, optional spaces, 'e', optional spaces, digits.
+            % Example: 1 e 5, 2.3E 10
+            % Target: Scientific notation like '1e5' (no explicit sign) that might have spaces.
+            % Purpose: Ensures no spaces within scientific notation numbers (exponent without sign).
+            % Approach: Matches a digit, optional spaces around 'e', then digits. Reconstructs without spaces. Case-insensitive for 'e'.
             processedCodePart = regexprep(processedCodePart, '(\d)\s*e\s*(\d+)', '$1e$2', 'ignorecase'); 
         end
 
@@ -984,8 +1073,16 @@ maxLhsLen = 0;
 
 resetBlockState = @() deal([], {}, 0); 
 
-for i = 1:length(lines) 
-    currentLineStruct = lineStructs{i}; 
+    % Determine safe iteration range to prevent indexing errors if lines and lineStructs have different lengths
+    safeLength = min(length(lines), length(lineStructs));
+    if length(lines) ~= length(lineStructs)
+        warning('code_beautifier:align_length_mismatch', ...
+                'Mismatch between processed lines array length (%d) and line structures array length (%d) in alignment block processing. Will process common range of %d lines. This might indicate an issue in preceding blank line handling or struct generation.', ...
+                length(lines), length(lineStructs), safeLength);
+    end
+
+    for i = 1:safeLength % Iterate only over the common, safe range
+        currentLineStruct = lineStructs{i};
     
     if currentLineStruct.isBlockCommentBoundaryStart || currentLineStruct.isBlockCommentContent || currentLineStruct.isBlankLine || currentLineStruct.formattingSkipped
         if ~isempty(blockItemsToFormat)
@@ -1053,15 +1150,26 @@ for i = 1:length(lines)
                 'comment', commentPart, 'originalIndex', i, 'indentStr', currentIndent);
             maxLhsLen = max(maxLhsLen, length(lhs));
         end
-    elseif isFullCommentLine % A line that is purely a comment
+    elseif isFullCommentLine
         if ~isempty(blockItemsToFormat) && strcmp(currentIndent, blockItemsToFormat{end}.indentStr)
+            comment_text_for_block = ''; % Default to empty if access is unsafe
+            if i <= length(lines)
+                comment_text_for_block = lines{i};
+            else
+                warning('code_beautifier:lines_shortened_for_comment', ...
+                        'Attempted to access lines{%d} for comment alignment when lines array was shorter. Original line index was %d. Using original line content if available, or empty.', i, i);
+                if i <= length(lineStructs) && isfield(lineStructs{i}, 'originalLine')
+                     comment_text_for_block = lineStructs{i}.originalLine; % Get original comment if possible
+                end
+            end
             blockLinesIndices(end+1) = i; % Add its index
-            blockItemsToFormat{end+1} = struct('lhs', '', 'rhs', '', ... % Mark as non-assignment
-                'comment', lines{i}, 'originalIndex', i, 'indentStr', currentIndent, 'isCommentOnly', true);
-        else 
-            if ~isempty(blockItemsToFormat)
+            blockItemsToFormat{end+1} = struct('lhs', '', 'rhs', '', ...
+                'comment', comment_text_for_block, 'originalIndex', i, 'indentStr', currentIndent, 'isCommentOnly', true);
+        else % This comment line does not continue the current alignment block (different indent or no prior block)
+            if ~isempty(blockItemsToFormat) % Finalize the previous block
                 lines = applyAlignmentToBlockInternal(lines, blockItemsToFormat, maxLhsLen, options);
             end
+            % Reset state for the next block; the current comment line itself won't start a new alignment block.
             [blockLinesIndices, blockItemsToFormat, maxLhsLen] = resetBlockState();
         end
     else % Not assignable, not a full comment line continuing block: breaks the block
@@ -1112,61 +1220,93 @@ end
 
 
 function [codeP, commentP] = extractCodeAndCommentInternal(lineStr)
-trimmedLine = strtrim(lineStr); 
-codeP = trimmedLine; 
-commentP = ''; 
+    trimmedLine = strtrim(lineStr);
+    codeP = trimmedLine;
+    commentP = '';
 
-len = length(trimmedLine);
-actualCommentStartIdx = -1; 
+    len = length(trimmedLine);
+    actualCommentStartIdx = -1;
 
-inSingleQuoteString = false;
-inDoubleQuoteString = false;
+    inSingleQuoteString = false;
+    inDoubleQuoteString = false;
 
-i = 1;
-while i <= len 
-    char = trimmedLine(i);
+    i = 1;
+    while i <= len
+        char = trimmedLine(i);
 
-    if char == '''' 
-        if ~inDoubleQuoteString 
-            if i+1 <= len && trimmedLine(i+1) == '''' 
-                i = i + 1; 
-            else
-                inSingleQuoteString = ~inSingleQuoteString; 
+        if inSingleQuoteString
+            % We are inside a single-quoted string
+            if char == ''''
+                if i + 1 <= len && trimmedLine(i+1) == '''' % Escaped single quote: ''
+                    i = i + 1; % Consume the second quote, remain inSingleQuoteString
+                else
+                    inSingleQuoteString = false; % End of single-quoted string
+                end
+            end
+            % Any other char (including '%' or '"') is part of the single-quoted string
+        elseif inDoubleQuoteString
+            % We are inside a double-quoted string
+            if char == '"' % Check for double quote character
+                if i + 1 <= len && trimmedLine(i+1) == '"' % Escaped double quote: ""
+                    i = i + 1; % Consume the second quote, remain inDoubleQuoteString
+                else
+                    inDoubleQuoteString = false; % End of double-quoted string
+                end
+            end
+            % Any other char (including '%' or '''') is part of the double-quoted string
+        else % Not currently in any string literal
+            if char == ''''
+                % Could be start of a new single-quoted string or a transpose operator
+                isLikelyTranspose = false;
+                if i > 1 % Transpose cannot be the first character of a trimmed line.
+                    prevChar = trimmedLine(i-1);
+                    if isstrprop(prevChar, 'alphanum') || prevChar == '_' || prevChar == '.' || ...
+                       ismember(prevChar, [')', ']', '}'])
+                        if i == len || ismember(trimmedLine(i+1), [' ', '%', ';', ',']) % Check char after
+                            isLikelyTranspose = true;
+                        end
+                    end
+                end
+
+                if isLikelyTranspose
+                    % It's a transpose operator. It does not change string state.
+                else
+                    % Not a transpose, so it's a string delimiter.
+                    inSingleQuoteString = true;
+                    if i + 1 <= len && trimmedLine(i+1) == '''' % Handles s = '''...'; (escaped quote at start of string)
+                        i = i + 1; % Consume the second ' of an opening ''
+                    end
+                end
+            elseif char == '"' % Check for double quote character
+                % Start of a double-quoted string
+                inDoubleQuoteString = true;
+                if i + 1 <= len && trimmedLine(i+1) == '"' % Handles s = """..."""; (escaped quote at start of string)
+                    i = i + 1; % Consume the second " of an opening ""
+                end
+            elseif char == '%'
+                actualCommentStartIdx = i; % Found the start of a real comment
+                break; % Exit loop, comment found
             end
         end
-    elseif char == '"' 
-        if ~inSingleQuoteString 
-            if i+1 <= len && trimmedLine(i+1) == '"' 
-                i = i + 1; 
-            else
-                inDoubleQuoteString = ~inDoubleQuoteString; 
-            end
-        end
-    elseif char == '%' 
-        if ~inSingleQuoteString && ~inDoubleQuoteString 
-            actualCommentStartIdx = i; 
-            break; 
-        end
+        i = i + 1;
     end
-    i = i + 1;
-end
 
-if actualCommentStartIdx ~= -1 
-    if actualCommentStartIdx == 1 
-        codeP = ''; 
-        commentP = trimmedLine; 
-    else
-        codeP = strtrim(trimmedLine(1:actualCommentStartIdx-1));
-        commentContent = strtrim(trimmedLine(actualCommentStartIdx+1:end));
-        if isempty(commentContent) && actualCommentStartIdx == len 
-            commentP = '%'; 
-        elseif isempty(commentContent) 
-            commentP = ' %'; 
+    if actualCommentStartIdx ~= -1
+        if actualCommentStartIdx == 1
+            codeP = ''; % Line is entirely a comment
+            commentP = trimmedLine;
         else
-            commentP = [' % ', commentContent]; 
+            codeP = strtrim(trimmedLine(1:actualCommentStartIdx-1));
+            commentContent = strtrim(trimmedLine(actualCommentStartIdx+1:end));
+            if isempty(commentContent) && actualCommentStartIdx == len % Handles "code%"
+                commentP = '%';
+            elseif isempty(commentContent) % Handles "code %  " (comment is just spaces)
+                commentP = ' %';
+            else
+                commentP = [' % ', commentContent];
+            end
         end
     end
-end
 end
 
 function validateStylePreset(presetName)
